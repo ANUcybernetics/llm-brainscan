@@ -5,9 +5,11 @@
 
 import os
 
-import matplotlib.pyplot as plt
 import numpy as np
 from transformers import AutoModelForCausalLM
+
+# Import the image saving function from save_images.py
+from save_images import save_weight_image_matplot
 
 
 def save_weight_image(weight, name, output_dir):
@@ -19,21 +21,15 @@ def save_weight_image(weight, name, output_dir):
     vmin, vmax = np.min(weight_np), np.max(weight_np)
     normalized = (weight_np - vmin) / (vmax - vmin + 1e-6)
 
-    # Create the figure with no axes and save
-    plt.figure(figsize=(10, 10))
-    plt.imshow(normalized, cmap='viridis')
-    plt.colorbar(label="Weight Value")
-    plt.title(f"{name} - min: {vmin:.4f}, max: {vmax:.4f}")
-    plt.tight_layout()
+    # Create filename
+    filename = f"{name.replace('/', '_').replace('.', '_')}.png"
 
-    # Ensure output directory exists
-    os.makedirs(output_dir, exist_ok=True)
+    # Add title information and call the external function
+    _title = f"{name} - min: {vmin:.4f}, max: {vmax:.4f}"
 
-    # Save the image
-    output_path = os.path.join(output_dir, f"{name.replace('/', '_').replace('.', '_')}.png")
-    plt.savefig(output_path, dpi=150)
-    plt.close()
-    print(f"Saved {output_path}")
+    # Use the imported function to save the image
+    save_weight_image_matplot(normalized, filename, output_dir)
+    print(f"Saved {os.path.join(output_dir, filename)}")
 
 
 def main() -> None:
