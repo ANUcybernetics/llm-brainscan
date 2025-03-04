@@ -9,7 +9,7 @@ import numpy as np
 from transformers import AutoModelForCausalLM
 
 # Import the image saving function from save_images.py
-from save_images import save_weight_image_matplot
+from save_images import save_weight_image_rawpng
 
 
 def save_weight_image(weight, name, output_dir):
@@ -20,6 +20,8 @@ def save_weight_image(weight, name, output_dir):
     # Normalize the weights
     vmin, vmax = np.min(weight_np), np.max(weight_np)
     normalized = (weight_np - vmin) / (vmax - vmin + 1e-6)
+    # Define sample size as a constant
+    SAMPLE_SIZE = 128
 
     # Create filename
     filename = f"{name.replace('/', '_').replace('.', '_')}.png"
@@ -28,8 +30,18 @@ def save_weight_image(weight, name, output_dir):
     _title = f"{name} - min: {vmin:.4f}, max: {vmax:.4f}"
 
     # Use the imported function to save the image
-    save_weight_image_matplot(normalized, filename, output_dir)
+    save_weight_image_rawpng(normalized, filename, output_dir)
+    # Also save a SAMPLE_SIZE x SAMPLE_SIZE sample from the top-left corner
+    if normalized.shape[0] >= SAMPLE_SIZE and normalized.shape[1] >= SAMPLE_SIZE:
+        sample = normalized[:SAMPLE_SIZE, :SAMPLE_SIZE]
+        sample_filename = filename.replace('.png', '-sample.png')
+        save_weight_image_rawpng(sample, sample_filename, output_dir)
+        print(f"Saved sample {os.path.join(output_dir, sample_filename)}")
+    else:
+        print(f"Cannot save sample: image too small ({normalized.shape})")
     print(f"Saved {os.path.join(output_dir, filename)}")
+
+
 
 
 def main() -> None:
