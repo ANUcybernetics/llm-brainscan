@@ -51,12 +51,18 @@ def main() -> None:
     # Process MLP layers
     mlp_counter = 0
     for name, param in model.named_parameters():
+        shape = param.data.shape
+        dim_str = " × ".join(str(dim) for dim in shape)
+
         if 'mlp' in name.lower() and 'weight' in name.lower():
-            print(f"Processing MLP layer: {name}")
+            print(f"Processing MLP layer: {name} ({dim_str})")
             mlp_counter += 1
 
             # Save the weight matrix as an image
             save_weight_image(param.data, f"mlp_{mlp_counter}_{name}", output_dir)
+        else:
+            # Format dimensions as readable string
+            print(f"Skipping visualization for {name} ({dim_str})")
 
     print(f"Processed {mlp_counter} MLP layers")
     print(f"Done! Check the images in {output_dir} directory")
