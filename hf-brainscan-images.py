@@ -12,25 +12,42 @@ from transformers import AutoModelForCausalLM
 from save_images import save_weight_image_rawpng
 
 
-def save_weight_image(weight, name, output_dir):
-    """Save a tensor as a normalized image"""
-    # Convert to numpy and normalize to [0, 1]
-    weight_np = weight.float().cpu().numpy()
-
-    # Normalize the weights
+def normalize_weights(weight_np):
+    """Transform weights by normalizing to [0, 1] range"""
     vmin, vmax = np.min(weight_np), np.max(weight_np)
     normalized = (weight_np - vmin) / (vmax - vmin + 1e-6)
+    return normalized, vmin, vmax
+
+
+def transform_weights(weight, transform_func=normalize_weights):
+    """Apply transformation to weight tensor"""
+    # Convert to numpy
+    weight_np = weight.float().cpu().numpy()
+
+    # Apply the transformation function
+    transformed_data, *metadata = transform_func(weight_np)
+
+    return transformed_data, metadata
+
+
+def save_weight_image(weight, name, output_dir, transform_func=normalize_weights):
+    """Save a tensor as a transformed image"""
+    # Transform the weights using the provided function
+    normalized, metadata = transform_weights(weight, transform_func)
+
+    if transform_func == normalize_weights:
+        vmin, vmax = metadata
+        _title = f"{name} - min: {vmin:.4f}, max: {vmax:.4f}"
+
     # Define sample size as a constant
     SAMPLE_SIZE = 128
 
     # Create filename
     filename = f"{name.replace('/', '_').replace('.', '_')}.png"
 
-    # Add title information and call the external function
-    _title = f"{name} - min: {vmin:.4f}, max: {vmax:.4f}"
-
     # Use the imported function to save the image
     save_weight_image_rawpng(normalized, filename, output_dir)
+
     # Also save a SAMPLE_SIZE x SAMPLE_SIZE sample from the top-left corner
     if normalized.shape[0] >= SAMPLE_SIZE and normalized.shape[1] >= SAMPLE_SIZE:
         sample = normalized[:SAMPLE_SIZE, :SAMPLE_SIZE]
@@ -40,8 +57,6 @@ def save_weight_image(weight, name, output_dir):
     else:
         print(f"Cannot save sample: image too small ({normalized.shape})")
     print(f"Saved {os.path.join(output_dir, filename)}")
-
-
 
 
 def main() -> None:
