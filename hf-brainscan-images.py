@@ -11,7 +11,7 @@ from transformers import AutoModelForCausalLM
 from save_images import save_weight_image_rawpng
 
 # Import the weight transformation functions
-from transform_weights import softmax_and_normalize_weights, transform_weights
+from transform_weights import *
 
 
 def main() -> None:
@@ -38,7 +38,7 @@ def main() -> None:
             mlp_counter += 1
 
             # Transform the weights before saving
-            transformed_weights = transform_weights(param.data, softmax_and_normalize_weights)
+            transformed_weights = transform_weights(param.data, quantize2_weights)
 
             # Save the transformed weight matrix as an image
             layer_name = f"mlp_{mlp_counter}_{name}"

@@ -29,6 +29,30 @@ def softmax_and_normalize_weights(weight_np):
 
     return result
 
+
+def quantize2_weights(weight_np):
+    """Transform weights by quantizing to binary values (0 or 1)"""
+    # First normalize to [0, 1]
+    normalized = normalize_weights(weight_np)
+
+    # Threshold at 0.5 to get binary values
+    binary = (normalized > 0.5).astype(float)
+
+    return binary
+
+def quantize3_weights(weight_np):
+    """Transform weights by quantizing to three values (0, 0.5, or 1)"""
+    # First normalize to [0, 1]
+    normalized = normalize_weights(weight_np)
+
+    # Threshold at 1/3 and 2/3 to get ternary values
+    result = np.zeros_like(normalized)
+    result[normalized > 2/3] = 1.0
+    result[(normalized >= 1/3) & (normalized <= 2/3)] = 0.5
+
+    return result
+
+
 def transform_weights(weight, transform_func=normalize_weights):
     """Apply transformation to weight tensor"""
     # Convert to numpy
