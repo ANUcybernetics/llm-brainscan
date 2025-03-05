@@ -11,7 +11,7 @@ from transformers import AutoModelForCausalLM
 from save_images import save_weight_image_rawpng
 
 # Import the weight transformation functions
-from transform_weights import *
+from transform_weights import quantize2_weights, transform_weights
 
 
 def main() -> None:
