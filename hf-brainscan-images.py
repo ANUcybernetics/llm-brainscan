@@ -38,7 +38,7 @@ def main() -> None:
             mlp_counter += 1
 
             # Transform the weights before saving
-            transformed_weights, metadata = transform_weights(param.data, normalize_weights)
+            transformed_weights = transform_weights(param.data, normalize_weights)
 
             # Save the transformed weight matrix as an image
             layer_name = f"mlp_{mlp_counter}_{name}"
