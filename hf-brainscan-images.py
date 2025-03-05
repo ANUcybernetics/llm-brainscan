@@ -42,7 +42,7 @@ def main() -> None:
 
             # Save the transformed weight matrix as an image
             layer_name = f"mlp_{mlp_counter}_{name}"
-            save_weight_image_rawpng(transformed_weights, f"{layer_name}.png", output_dir)
+            save_weight_image_rawpng(transformed_weights, f"{layer_name}.png", output_dir, cropped=True)
         else:
             # Format dimensions as readable string
             print(f"Skipping visualization for {name} ({dim_str})")
