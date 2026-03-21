@@ -3,6 +3,7 @@
 import logging
 import queue
 import threading
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -15,42 +16,65 @@ MIN_SPEECH_SECONDS = 0.5
 MAX_SPEECH_SECONDS = 30.0
 
 
+@dataclass(frozen=True)
+class SpeechConfig:
+    model_size: str = "small"
+    device: str = "cpu"
+    compute_type: str = "int8"
+    sample_rate: int = SAMPLE_RATE
+    chunk_seconds: float = CHUNK_SECONDS
+    silence_threshold: float = SILENCE_THRESHOLD
+    min_speech_seconds: float = MIN_SPEECH_SECONDS
+    max_speech_seconds: float = MAX_SPEECH_SECONDS
+    audio_device: int | None = None
+
+    @property
+    def min_samples(self) -> int:
+        return int(self.min_speech_seconds * self.sample_rate)
+
+    @property
+    def max_samples(self) -> int:
+        return int(self.max_speech_seconds * self.sample_rate)
+
+    @property
+    def chunk_samples(self) -> int:
+        return int(self.chunk_seconds * self.sample_rate)
+
+
+def is_speech(audio: np.ndarray, threshold: float) -> bool:
+    return float(np.sqrt(np.mean(audio**2))) > threshold
+
+
+def transcribe(model: object, audio: np.ndarray) -> str:
+    segments, _info = model.transcribe(  # type: ignore[union-attr]
+        audio,
+        language="en",
+        vad_filter=True,
+    )
+    return " ".join(seg.text.strip() for seg in segments)
+
+
+def load_whisper_model(config: SpeechConfig) -> object:
+    from faster_whisper import WhisperModel
+
+    return WhisperModel(
+        config.model_size,
+        device=config.device,
+        compute_type=config.compute_type,
+    )
+
+
 class SpeechListener:
-    def __init__(
-        self,
-        model_size: str = "small",
-        device: str = "cpu",
-        compute_type: str = "int8",
-        sample_rate: int = SAMPLE_RATE,
-        chunk_seconds: float = CHUNK_SECONDS,
-        silence_threshold: float = SILENCE_THRESHOLD,
-        min_speech_seconds: float = MIN_SPEECH_SECONDS,
-        max_speech_seconds: float = MAX_SPEECH_SECONDS,
-        audio_device: int | None = None,
-    ):
-        self._model_size = model_size
-        self._whisper_device = device
-        self._compute_type = compute_type
-        self._sample_rate = sample_rate
-        self._chunk_seconds = chunk_seconds
-        self._silence_threshold = silence_threshold
-        self._min_samples = int(min_speech_seconds * sample_rate)
-        self._max_samples = int(max_speech_seconds * sample_rate)
-        self._audio_device = audio_device
+    def __init__(self, config: SpeechConfig | None = None, **kwargs):
+        if config is not None:
+            self.config = config
+        else:
+            self.config = SpeechConfig(**kwargs)
 
         self._text_queue: queue.Queue[str] = queue.Queue()
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
-        self._model = None
-
-    def _load_model(self):
-        from faster_whisper import WhisperModel
-
-        self._model = WhisperModel(
-            self._model_size,
-            device=self._whisper_device,
-            compute_type=self._compute_type,
-        )
+        self._model: object | None = None
 
     def start(self) -> None:
         if self._thread is not None:
@@ -74,60 +98,55 @@ class SpeechListener:
                 break
         return segments
 
-    def _is_speech(self, audio: np.ndarray) -> bool:
-        return float(np.sqrt(np.mean(audio**2))) > self._silence_threshold
+    def _load_model(self) -> None:
+        self._model = load_whisper_model(self.config)
 
     def _run(self) -> None:
         import sounddevice as sd
 
         self._load_model()
+        cfg = self.config
         log.info(
             "STT listener started (model=%s, device=%s)",
-            self._model_size,
-            self._whisper_device,
+            cfg.model_size,
+            cfg.device,
         )
 
-        chunk_samples = int(self._chunk_seconds * self._sample_rate)
         speech_buffer: list[np.ndarray] = []
         in_speech = False
 
         with sd.InputStream(
-            samplerate=self._sample_rate,
+            samplerate=cfg.sample_rate,
             channels=1,
             dtype="float32",
-            blocksize=chunk_samples,
-            device=self._audio_device,
+            blocksize=cfg.chunk_samples,
+            device=cfg.audio_device,
         ) as stream:
             while not self._stop_event.is_set():
-                audio, overflowed = stream.read(chunk_samples)
+                audio, overflowed = stream.read(cfg.chunk_samples)
                 if overflowed:
                     log.warning("Audio input overflowed")
                 chunk = audio[:, 0]
 
-                if self._is_speech(chunk):
+                if is_speech(chunk, cfg.silence_threshold):
                     speech_buffer.append(chunk)
                     in_speech = True
                     total_samples = sum(len(c) for c in speech_buffer)
-                    if total_samples >= self._max_samples:
-                        self._transcribe(speech_buffer)
+                    if total_samples >= cfg.max_samples:
+                        self._do_transcribe(speech_buffer)
                         speech_buffer = []
                         in_speech = False
                 elif in_speech:
                     total_samples = sum(len(c) for c in speech_buffer)
-                    if total_samples >= self._min_samples:
-                        self._transcribe(speech_buffer)
+                    if total_samples >= cfg.min_samples:
+                        self._do_transcribe(speech_buffer)
                     speech_buffer = []
                     in_speech = False
 
-    def _transcribe(self, chunks: list[np.ndarray]) -> None:
+    def _do_transcribe(self, chunks: list[np.ndarray]) -> None:
         assert self._model is not None
         audio = np.concatenate(chunks)
-        segments, _info = self._model.transcribe(
-            audio,
-            language="en",
-            vad_filter=True,
-        )
-        text = " ".join(seg.text.strip() for seg in segments)
+        text = transcribe(self._model, audio)
         if text:
             log.info("Transcribed: %s", text)
             self._text_queue.put(text)

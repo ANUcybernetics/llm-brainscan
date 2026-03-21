@@ -12,7 +12,10 @@ from brainscan.stt import (
     CHUNK_SECONDS,
     SAMPLE_RATE,
     SILENCE_THRESHOLD,
+    SpeechConfig,
     SpeechListener,
+    is_speech,
+    transcribe,
 )
 
 
@@ -22,20 +25,65 @@ def listener():
 
 
 class TestSpeechDetection:
-    def test_silence_not_detected(self, listener):
+    def test_silence_not_detected(self):
         silence = np.zeros(1600, dtype=np.float32)
-        assert not listener._is_speech(silence)
+        assert not is_speech(silence, SILENCE_THRESHOLD)
 
-    def test_loud_audio_detected(self, listener):
+    def test_loud_audio_detected(self):
         loud = np.full(1600, 0.5, dtype=np.float32)
-        assert listener._is_speech(loud)
+        assert is_speech(loud, SILENCE_THRESHOLD)
 
-    def test_threshold_boundary(self, listener):
+    def test_threshold_boundary(self):
         just_below = np.full(1600, SILENCE_THRESHOLD * 0.9, dtype=np.float32)
-        assert not listener._is_speech(just_below)
+        assert not is_speech(just_below, SILENCE_THRESHOLD)
 
         just_above = np.full(1600, SILENCE_THRESHOLD * 1.1, dtype=np.float32)
-        assert listener._is_speech(just_above)
+        assert is_speech(just_above, SILENCE_THRESHOLD)
+
+
+class TestTranscribe:
+    def test_transcribes_audio(self):
+        mock_segment = MagicMock()
+        mock_segment.text = " hello world "
+        mock_model = MagicMock()
+        mock_model.transcribe.return_value = ([mock_segment], None)
+
+        audio = np.random.randn(3200).astype(np.float32)
+        result = transcribe(mock_model, audio)
+        assert result == "hello world"
+
+    def test_empty_transcription(self):
+        mock_model = MagicMock()
+        mock_model.transcribe.return_value = ([], None)
+
+        audio = np.random.randn(3200).astype(np.float32)
+        result = transcribe(mock_model, audio)
+        assert result == ""
+
+    def test_multiple_segments_joined(self):
+        seg1 = MagicMock()
+        seg1.text = " hello "
+        seg2 = MagicMock()
+        seg2.text = " world "
+        mock_model = MagicMock()
+        mock_model.transcribe.return_value = ([seg1, seg2], None)
+
+        result = transcribe(mock_model, np.zeros(3200, dtype=np.float32))
+        assert result == "hello world"
+
+
+class TestSpeechConfig:
+    def test_defaults(self):
+        cfg = SpeechConfig()
+        assert cfg.sample_rate == SAMPLE_RATE
+        assert cfg.chunk_seconds == CHUNK_SECONDS
+        assert cfg.silence_threshold == SILENCE_THRESHOLD
+
+    def test_computed_properties(self):
+        cfg = SpeechConfig(min_speech_seconds=0.5, max_speech_seconds=30.0)
+        assert cfg.min_samples == int(0.5 * SAMPLE_RATE)
+        assert cfg.max_samples == int(30.0 * SAMPLE_RATE)
+        assert cfg.chunk_samples == int(CHUNK_SECONDS * SAMPLE_RATE)
 
 
 class TestGetText:
@@ -56,7 +104,7 @@ class TestGetText:
         assert listener.get_text() == ["second"]
 
 
-class TestTranscribe:
+class TestDoTranscribe:
     def test_transcribes_and_queues(self, listener):
         mock_segment = MagicMock()
         mock_segment.text = " hello world "
@@ -65,7 +113,7 @@ class TestTranscribe:
         listener._model = mock_model
 
         chunks = [np.random.randn(3200).astype(np.float32)]
-        listener._transcribe(chunks)
+        listener._do_transcribe(chunks)
 
         result = listener.get_text()
         assert result == ["hello world"]
@@ -76,7 +124,7 @@ class TestTranscribe:
         listener._model = mock_model
 
         chunks = [np.random.randn(3200).astype(np.float32)]
-        listener._transcribe(chunks)
+        listener._do_transcribe(chunks)
 
         assert listener.get_text() == []
 
@@ -89,7 +137,7 @@ class TestTranscribe:
         mock_model.transcribe.return_value = ([seg1, seg2], None)
         listener._model = mock_model
 
-        listener._transcribe([np.zeros(3200, dtype=np.float32)])
+        listener._do_transcribe([np.zeros(3200, dtype=np.float32)])
         assert listener.get_text() == ["hello world"]
 
 
@@ -129,11 +177,11 @@ class TestStartStop:
 class TestChunkSeconds:
     def test_default_chunk_seconds(self):
         listener = SpeechListener(model_size="tiny")
-        assert listener._chunk_seconds == CHUNK_SECONDS
+        assert listener.config.chunk_seconds == CHUNK_SECONDS
 
     def test_custom_chunk_seconds(self):
         listener = SpeechListener(model_size="tiny", chunk_seconds=1.0)
-        assert listener._chunk_seconds == 1.0
+        assert listener.config.chunk_seconds == 1.0
 
     def test_chunk_seconds_affects_audio_read_size(self):
         chunk_sec = 1.0

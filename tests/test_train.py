@@ -159,9 +159,9 @@ class TestSTTArgsPassthrough:
         if "sounddevice" not in sys.modules:
             sys.modules["sounddevice"] = MagicMock()
 
-        from brainscan.stt import SpeechListener
+        from brainscan.stt import SpeechConfig, SpeechListener
 
-        listener = SpeechListener(
+        cfg = SpeechConfig(
             model_size="tiny",
             device="cpu",
             chunk_seconds=1.5,
@@ -169,8 +169,9 @@ class TestSTTArgsPassthrough:
             min_speech_seconds=0.3,
             max_speech_seconds=15.0,
         )
+        listener = SpeechListener(config=cfg)
 
-        assert listener._chunk_seconds == 1.5
-        assert listener._silence_threshold == 0.05
-        assert listener._min_samples == int(0.3 * 16000)
-        assert listener._max_samples == int(15.0 * 16000)
+        assert listener.config.chunk_seconds == 1.5
+        assert listener.config.silence_threshold == 0.05
+        assert listener.config.min_samples == int(0.3 * 16000)
+        assert listener.config.max_samples == int(15.0 * 16000)

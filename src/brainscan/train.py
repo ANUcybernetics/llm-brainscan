@@ -242,9 +242,9 @@ def main() -> None:
 
     listener = None
     if not args.no_mic:
-        from brainscan.stt import SpeechListener
+        from brainscan.stt import SpeechConfig, SpeechListener
 
-        listener = SpeechListener(
+        stt_config = SpeechConfig(
             model_size=args.whisper_model,
             device=args.whisper_device,
             chunk_seconds=args.chunk_seconds,
@@ -252,6 +252,7 @@ def main() -> None:
             min_speech_seconds=args.min_speech_seconds,
             max_speech_seconds=args.max_speech_seconds,
         )
+        listener = SpeechListener(config=stt_config)
         listener.start()
         print("Microphone listener started")
 
