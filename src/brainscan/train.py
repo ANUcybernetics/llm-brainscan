@@ -5,25 +5,25 @@ import json
 import time
 from pathlib import Path
 
-import torch
 import numpy as np
+import torch
 
-from brainscan.model import GPT
-from brainscan.data import prepare_batches, load_text_dataset, decode
-from brainscan.snapshot import capture_weights, capture_weight_deltas, ActivationCapture
+from brainscan.data import decode, load_text_dataset, prepare_batches
 from brainscan.layout import (
-    WIDTH,
     HEIGHT,
+    WIDTH,
     compute_layout,
     default_sections,
     layout_summary,
     layout_to_flat_order,
 )
+from brainscan.model import GPT
 from brainscan.renderer import (
     OffscreenRenderer,
     flatten_weights,
     normalise_weights,
 )
+from brainscan.snapshot import ActivationCapture, capture_weight_deltas, capture_weights
 
 
 def get_device() -> torch.device:
@@ -37,6 +37,7 @@ def download_shakespeare(data_dir: Path) -> Path:
     if path.exists():
         return path
     import urllib.request
+
     url = "https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt"
     urllib.request.urlretrieve(url, path)
     return path
@@ -44,13 +45,16 @@ def download_shakespeare(data_dir: Path) -> Path:
 
 def save_frame(canvas: np.ndarray, path: Path) -> None:
     from PIL import Image
+
     img = Image.fromarray(canvas[:, :, :3])
     img.save(path)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="LLM Brainscan training")
-    parser.add_argument("--data", type=str, default=None, help="Path to training text file")
+    parser.add_argument(
+        "--data", type=str, default=None, help="Path to training text file"
+    )
     parser.add_argument("--n-layer", type=int, default=8)
     parser.add_argument("--n-head", type=int, default=9)
     parser.add_argument("--n-embd", type=int, default=576)
@@ -58,9 +62,18 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--steps", type=int, default=1000)
-    parser.add_argument("--snapshot-every", type=int, default=10, help="Save weight snapshot every N steps")
+    parser.add_argument(
+        "--snapshot-every",
+        type=int,
+        default=10,
+        help="Save weight snapshot every N steps",
+    )
     parser.add_argument("--output-dir", type=str, default="output")
-    parser.add_argument("--save-images", action="store_true", help="Save weight visualisation frames as PNGs")
+    parser.add_argument(
+        "--save-images",
+        action="store_true",
+        help="Save weight visualisation frames as PNGs",
+    )
     args = parser.parse_args()
 
     device = get_device()
@@ -72,10 +85,7 @@ def main() -> None:
 
     data_dir = Path("data")
     data_dir.mkdir(exist_ok=True)
-    if args.data:
-        data_path = Path(args.data)
-    else:
-        data_path = download_shakespeare(data_dir)
+    data_path = Path(args.data) if args.data else download_shakespeare(data_dir)
     data = load_text_dataset(data_path)
     print(f"Dataset: {len(data):,} bytes from {data_path}")
 
@@ -149,7 +159,10 @@ def main() -> None:
                 save_frame(canvas_d, frames_dir / f"deltas_{step:06d}.png")
 
     total_time = time.time() - t0
-    print(f"\nDone. {args.steps} steps in {total_time:.1f}s ({args.steps / total_time:.1f} steps/s)")
+    print(
+        f"\nDone. {args.steps} steps in {total_time:.1f}s"
+        f" ({args.steps / total_time:.1f} steps/s)"
+    )
 
     print("\nRunning inference with activation capture...")
     cap = ActivationCapture(model)

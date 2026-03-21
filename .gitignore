@@ -9,3 +9,7 @@ output/
 data/
 *.pt
 *.pth
+.env
+.envrc
+*.pem
+*.key

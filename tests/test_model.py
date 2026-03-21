@@ -1,9 +1,8 @@
-import torch
 import pytest
+import torch
+from conftest import SMALL_CONFIG
 
 from brainscan.model import GPT
-
-from conftest import SMALL_CONFIG
 
 
 class TestGPTArchitecture:
@@ -89,7 +88,7 @@ class TestGPTGeneration:
         context = torch.randint(0, 256, (1, 4), device=device)
         with torch.no_grad():
             for _ in range(10):
-                logits, _ = small_model(context[:, -SMALL_CONFIG["sequence_len"]:])
+                logits, _ = small_model(context[:, -SMALL_CONFIG["sequence_len"] :])
                 next_token = logits[:, -1, :].argmax(dim=-1, keepdim=True)
                 context = torch.cat([context, next_token], dim=1)
         assert context.shape == (1, 14)
@@ -99,7 +98,7 @@ class TestGPTGeneration:
         context = torch.randint(0, 256, (1, 4), device=device)
         with torch.no_grad():
             for _ in range(10):
-                logits, _ = small_model(context[:, -SMALL_CONFIG["sequence_len"]:])
+                logits, _ = small_model(context[:, -SMALL_CONFIG["sequence_len"] :])
                 probs = torch.softmax(logits[:, -1, :], dim=-1)
                 next_token = torch.multinomial(probs, num_samples=1)
                 context = torch.cat([context, next_token], dim=1)

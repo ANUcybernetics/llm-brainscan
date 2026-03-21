@@ -1,13 +1,11 @@
-import math
-
 import pytest
 
 from brainscan.layout import (
     GUTTER,
     HEIGHT,
+    WIDTH,
     Rect,
     Section,
-    WIDTH,
     compute_layout,
     default_sections,
     layout_summary,
@@ -81,9 +79,7 @@ class TestComputeLayout:
     def test_rect_area_covers_params(self, default_layout):
         for rect in default_layout.values():
             area = rect.w * rect.h
-            assert area >= rect.count, (
-                f"{rect.name}: area {area} < count {rect.count}"
-            )
+            assert area >= rect.count, f"{rect.name}: area {area} < count {rect.count}"
 
     def test_left_to_right_ordering(self, default_layout):
         embed_x = default_layout["wte.weight"].x

@@ -1,7 +1,6 @@
 import torch
-import pytest
 
-from brainscan.data import encode, decode, prepare_batches
+from brainscan.data import decode, encode, prepare_batches
 
 
 class TestEncoding:

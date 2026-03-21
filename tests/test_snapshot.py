@@ -1,10 +1,8 @@
 import torch
-import pytest
+from conftest import SMALL_CONFIG
 
 from brainscan.model import GPT
-from brainscan.snapshot import capture_weights, capture_weight_deltas, ActivationCapture
-
-from conftest import SMALL_CONFIG
+from brainscan.snapshot import ActivationCapture, capture_weight_deltas, capture_weights
 
 
 class TestCaptureWeights:
@@ -104,31 +102,45 @@ class TestTrainingLoop:
         # Use a very simple repeating pattern that should be easy to learn
         pattern = b"abcabc" * 200
         from brainscan.data import prepare_batches
+
         losses = []
         for _ in range(50):
-            x, y = prepare_batches(pattern, batch_size=8, sequence_len=SMALL_CONFIG["sequence_len"], device=device)
+            x, y = prepare_batches(
+                pattern,
+                batch_size=8,
+                sequence_len=SMALL_CONFIG["sequence_len"],
+                device=device,
+            )
             _, loss = model(x, y)
             optimiser.zero_grad()
             loss.backward()
             optimiser.step()
             losses.append(loss.item())
-        assert losses[-1] < losses[0], f"Loss did not decrease: {losses[0]:.4f} -> {losses[-1]:.4f}"
+        assert losses[-1] < losses[0], (
+            f"Loss did not decrease: {losses[0]:.4f} -> {losses[-1]:.4f}"
+        )
 
     def test_snapshot_during_training(self, device):
         model = GPT(**SMALL_CONFIG).to(device)
         optimiser = torch.optim.AdamW(model.parameters(), lr=1e-3)
         data = b"hello world " * 200
         from brainscan.data import prepare_batches
+
         prev = capture_weights(model)
         snapshots = [prev]
-        for step in range(5):
-            x, y = prepare_batches(data, batch_size=4, sequence_len=SMALL_CONFIG["sequence_len"], device=device)
+        for _step in range(5):
+            x, y = prepare_batches(
+                data,
+                batch_size=4,
+                sequence_len=SMALL_CONFIG["sequence_len"],
+                device=device,
+            )
             _, loss = model(x, y)
             optimiser.zero_grad()
             loss.backward()
             optimiser.step()
             current = capture_weights(model)
-            deltas = capture_weight_deltas(current, prev)
+            capture_weight_deltas(current, prev)
             snapshots.append(current)
             prev = current
         assert len(snapshots) == 6

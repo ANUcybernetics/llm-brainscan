@@ -25,6 +25,13 @@ def prepare_batches(
     arr = np.frombuffer(data, dtype=np.uint8).copy()
     n = len(arr)
     ix = torch.randint(n - sequence_len, (batch_size,))
-    x = torch.stack([torch.from_numpy(arr[i : i + sequence_len].astype(np.int64)) for i in ix])
-    y = torch.stack([torch.from_numpy(arr[i + 1 : i + 1 + sequence_len].astype(np.int64)) for i in ix])
+    x = torch.stack(
+        [torch.from_numpy(arr[i : i + sequence_len].astype(np.int64)) for i in ix]
+    )
+    y = torch.stack(
+        [
+            torch.from_numpy(arr[i + 1 : i + 1 + sequence_len].astype(np.int64))
+            for i in ix
+        ]
+    )
     return x.to(device), y.to(device)

@@ -2,7 +2,6 @@ import numpy as np
 import pytest
 
 from brainscan.renderer import (
-    COLORMAP_DIVERGING,
     COLORMAP_THERMAL,
     OffscreenRenderer,
     flatten_weights,
@@ -122,7 +121,7 @@ class TestOffscreenRenderer:
         img_pos = renderer.render(positive)
         negative = -np.ones(32 * 32, dtype=np.float32)
         img_neg = renderer.render(negative)
-        # Thermal: positive should be brighter (yellow/white), negative darker (black/blue)
+        # Thermal: positive=brighter (yellow/white), negative=darker (black/blue)
         assert img_pos[16, 16, :3].sum() > img_neg[16, 16, :3].sum()
 
     def test_different_sizes(self):
@@ -142,7 +141,6 @@ class TestOffscreenRenderer:
 
     def test_render_with_model_weights(self, small_renderer):
         """Integration test: render actual model weight data."""
-        import torch
         from brainscan.model import GPT
         from brainscan.snapshot import capture_weights
 

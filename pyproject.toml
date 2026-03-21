@@ -15,11 +15,19 @@ dependencies = [
 dev = [
     "pytest",
     "pytest-xdist",
+    "ruff>=0.15.7",
 ]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/brainscan"]

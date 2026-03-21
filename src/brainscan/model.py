@@ -1,5 +1,3 @@
-import math
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -83,7 +81,7 @@ class GPT(nn.Module):
         self, idx: torch.Tensor, targets: torch.Tensor | None = None
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         B, T = idx.size()
-        assert T <= self.sequence_len
+        assert self.sequence_len >= T
         pos = torch.arange(0, T, dtype=torch.long, device=idx.device)
         x = self.wte(idx) + self.wpe(pos)
         for block in self.blocks:

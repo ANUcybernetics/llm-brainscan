@@ -68,9 +68,7 @@ def default_sections(n_layer: int = 8) -> list[Section]:
     return sections
 
 
-def _section_param_total(
-    section: Section, param_counts: dict[str, int]
-) -> int:
+def _section_param_total(section: Section, param_counts: dict[str, int]) -> int:
     return sum(param_counts.get(name, 0) for name in section.param_names)
 
 
@@ -110,7 +108,9 @@ def compute_layout(
     section_widths: list[int] = []
     for section in sections:
         total = _section_param_total(section, param_counts)
-        n_items = sum(1 for name in section.param_names if param_counts.get(name, 0) > 0)
+        n_items = sum(
+            1 for name in section.param_names if param_counts.get(name, 0) > 0
+        )
         col_w = _column_width(total, height, gutter, n_items)
         section_widths.append(col_w)
 
@@ -125,7 +125,7 @@ def compute_layout(
     layout: dict[str, Rect] = {}
     x_cursor = 0
 
-    for section, col_w in zip(sections, section_widths):
+    for section, col_w in zip(sections, section_widths, strict=True):
         y_cursor = 0
 
         for name in section.param_names:

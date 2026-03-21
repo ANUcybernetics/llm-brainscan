@@ -26,13 +26,12 @@ class ActivationCapture:
     def install(self) -> None:
         for name, module in self.model.named_modules():
             if isinstance(module, (nn.Linear, nn.LayerNorm, nn.Embedding)):
-                self._hooks.append(
-                    module.register_forward_hook(self._make_hook(name))
-                )
+                self._hooks.append(module.register_forward_hook(self._make_hook(name)))
 
     def _make_hook(self, name: str):
         def hook(module: nn.Module, input: tuple, output: torch.Tensor) -> None:
             self.activations[name] = output.detach()
+
         return hook
 
     def remove(self) -> None:
