@@ -23,6 +23,7 @@ class SpeechListener:
         device: str = "cpu",
         compute_type: str = "int8",
         sample_rate: int = SAMPLE_RATE,
+        chunk_seconds: float = CHUNK_SECONDS,
         silence_threshold: float = SILENCE_THRESHOLD,
         min_speech_seconds: float = MIN_SPEECH_SECONDS,
         max_speech_seconds: float = MAX_SPEECH_SECONDS,
@@ -33,6 +34,7 @@ class SpeechListener:
         self._whisper_device = device
         self._compute_type = compute_type
         self._sample_rate = sample_rate
+        self._chunk_seconds = chunk_seconds
         self._silence_threshold = silence_threshold
         self._min_samples = int(min_speech_seconds * sample_rate)
         self._max_samples = int(max_speech_seconds * sample_rate)
@@ -88,7 +90,7 @@ class SpeechListener:
             self._whisper_device,
         )
 
-        chunk_samples = int(CHUNK_SECONDS * self._sample_rate)
+        chunk_samples = int(self._chunk_seconds * self._sample_rate)
         speech_buffer: list[np.ndarray] = []
         in_speech = False
 

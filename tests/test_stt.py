@@ -141,6 +141,65 @@ class TestStartStop:
         listener.stop()
 
 
+class TestChunkSeconds:
+    def test_default_chunk_seconds(self):
+        listener = SpeechListener(model_size="tiny")
+        assert listener._chunk_seconds == CHUNK_SECONDS
+
+    def test_custom_chunk_seconds(self):
+        listener = SpeechListener(model_size="tiny", chunk_seconds=1.0)
+        assert listener._chunk_seconds == 1.0
+
+    def test_chunk_seconds_affects_audio_read_size(self):
+        chunk_sec = 1.0
+        chunk_samples = int(chunk_sec * SAMPLE_RATE)
+        speech_chunk = np.full((chunk_samples, 1), 0.5, dtype=np.float32)
+        silence_chunk = np.zeros((chunk_samples, 1), dtype=np.float32)
+
+        read_count = 0
+
+        def mock_read(n):
+            nonlocal read_count
+            read_count += 1
+            assert n == chunk_samples
+            if read_count == 1:
+                return speech_chunk, False
+            if read_count == 2:
+                return silence_chunk, False
+            listener._stop_event.set()
+            return silence_chunk, False
+
+        mock_stream = MagicMock()
+        mock_stream.read = mock_read
+        mock_stream.__enter__ = MagicMock(return_value=mock_stream)
+        mock_stream.__exit__ = MagicMock(return_value=False)
+
+        sd_mock = sys.modules["sounddevice"]
+        sd_mock.InputStream = MagicMock(return_value=mock_stream)
+
+        listener = SpeechListener(
+            model_size="tiny", chunk_seconds=chunk_sec
+        )
+
+        mock_segment = MagicMock()
+        mock_segment.text = "short chunk"
+        mock_model = MagicMock()
+        mock_model.transcribe.return_value = ([mock_segment], None)
+
+        with patch.object(listener, "_load_model"):
+            listener._model = mock_model
+            listener._run()
+
+        assert listener.get_text() == ["short chunk"]
+        sd_mock.InputStream.assert_called_once_with(
+            samplerate=SAMPLE_RATE,
+            channels=1,
+            dtype="float32",
+            blocksize=chunk_samples,
+            device=None,
+        )
+
+
 class TestAudioLoop:
     def test_speech_then_silence_triggers_transcription(self):
         chunk_samples = int(CHUNK_SECONDS * SAMPLE_RATE)

@@ -1,14 +1,22 @@
-"""Train a character-level GPT and capture weight snapshots each step."""
+"""Train a character-level GPT with live speech input and weight visualisation.
+
+On startup, loads Shakespeare as the initial training corpus. A microphone
+listener runs in the background; when speech is detected, it is transcribed
+via Whisper, run through the model as an inference pass (shown in the text
+strip), and then added to the training data. The model's brain is displayed
+on an 8K canvas, one pixel per parameter.
+"""
 
 import argparse
 import json
+import logging
 import time
 from pathlib import Path
 
 import numpy as np
 import torch
 
-from brainscan.data import decode, load_text_dataset, prepare_batches
+from brainscan.data import TextBuffer, decode, load_text_dataset, prepare_batches
 from brainscan.layout import (
     HEIGHT,
     LAYOUT_HEIGHT,
@@ -25,7 +33,9 @@ from brainscan.renderer import (
     flatten_weights,
     normalise_weights,
 )
-from brainscan.snapshot import ActivationCapture, capture_weight_deltas, capture_weights
+from brainscan.snapshot import capture_weight_deltas, capture_weights
+
+log = logging.getLogger(__name__)
 
 
 def get_device() -> torch.device:
@@ -52,6 +62,47 @@ def save_frame(canvas: np.ndarray, path: Path) -> None:
     img.save(path)
 
 
+def generate(
+    model: GPT,
+    prompt_bytes: bytes,
+    max_tokens: int,
+    device: torch.device,
+    sequence_len: int,
+) -> tuple[list[int], list[float]]:
+    model.eval()
+    tokens = list(prompt_bytes)
+    probs = [1.0] * len(tokens)
+    context = torch.tensor([tokens], dtype=torch.long, device=device)
+    with torch.no_grad():
+        for _ in range(max_tokens):
+            logits, _ = model(context[:, -sequence_len:])
+            p = torch.softmax(logits[:, -1, :], dim=-1)
+            next_token = torch.multinomial(p, num_samples=1)
+            token_prob = p[0, next_token.item()].item()
+            tokens.append(next_token.item())
+            probs.append(token_prob)
+            context = torch.cat([context, next_token], dim=1)
+    model.train()
+    return tokens, probs
+
+
+def render_frame(
+    renderer: OffscreenRenderer,
+    weights: dict[str, torch.Tensor],
+    flat_order: list[str],
+    text_chars: list[int] | None = None,
+    text_probs: list[float] | None = None,
+) -> np.ndarray:
+    np_weights = {k: v.cpu().numpy() for k, v in weights.items()}
+    flat, count = flatten_weights(np_weights, layout_order=flat_order)
+    normed = normalise_weights(flat)
+    buf = np.zeros(WIDTH * HEIGHT, dtype=np.float32)
+    buf[:count] = normed
+    chars = np.array(text_chars, dtype=np.uint32) if text_chars else None
+    probs = np.array(text_probs, dtype=np.float32) if text_probs else None
+    return renderer.render(buf, text_chars=chars, text_probs=probs)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="LLM Brainscan training")
     parser.add_argument(
@@ -63,12 +114,12 @@ def main() -> None:
     parser.add_argument("--sequence-len", type=int, default=256)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--lr", type=float, default=3e-4)
-    parser.add_argument("--steps", type=int, default=1000)
+    parser.add_argument("--steps", type=int, default=0, help="0 = run forever")
     parser.add_argument(
         "--snapshot-every",
         type=int,
         default=10,
-        help="Save weight snapshot every N steps",
+        help="Capture/render every N steps",
     )
     parser.add_argument("--output-dir", type=str, default="output")
     parser.add_argument(
@@ -76,7 +127,59 @@ def main() -> None:
         action="store_true",
         help="Save weight visualisation frames as PNGs",
     )
+    parser.add_argument(
+        "--no-mic",
+        action="store_true",
+        help="Disable microphone input",
+    )
+    parser.add_argument(
+        "--whisper-model",
+        type=str,
+        default="small",
+        help="Whisper model size for STT",
+    )
+    parser.add_argument(
+        "--whisper-device",
+        type=str,
+        default="cpu",
+        help="Device for Whisper inference (cpu or cuda)",
+    )
+    parser.add_argument(
+        "--gen-tokens",
+        type=int,
+        default=200,
+        help="Tokens to generate per inference pass",
+    )
+    parser.add_argument(
+        "--silence-threshold",
+        type=float,
+        default=0.01,
+        help="RMS threshold for speech detection (raise for noisy environments)",
+    )
+    parser.add_argument(
+        "--chunk-seconds",
+        type=float,
+        default=2.0,
+        help="Audio chunk size in seconds (debounce window)",
+    )
+    parser.add_argument(
+        "--min-speech-seconds",
+        type=float,
+        default=0.5,
+        help="Minimum speech duration to trigger transcription",
+    )
+    parser.add_argument(
+        "--max-speech-seconds",
+        type=float,
+        default=30.0,
+        help="Maximum speech duration before forced transcription",
+    )
     args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
 
     device = get_device()
     output_dir = Path(args.output_dir)
@@ -88,8 +191,11 @@ def main() -> None:
     data_dir = Path("data")
     data_dir.mkdir(exist_ok=True)
     data_path = Path(args.data) if args.data else download_shakespeare(data_dir)
-    data = load_text_dataset(data_path)
-    print(f"Dataset: {len(data):,} bytes from {data_path}")
+    raw_data = load_text_dataset(data_path)
+
+    audience_log = output_dir / "audience_input.txt"
+    training_data = TextBuffer(raw_data, persist_path=audience_log)
+    print(f"Dataset: {len(training_data):,} bytes from {data_path}")
 
     model = GPT(
         vocab_size=256,
@@ -102,7 +208,10 @@ def main() -> None:
     param_counts = {name: p.numel() for name, p in model.named_parameters()}
     total_params = sum(param_counts.values())
     print(f"Model: {total_params:,} parameters")
-    print(f"Display: {WIDTH}x{HEIGHT} = {WIDTH * HEIGHT:,} pixels (layout: {WIDTH}x{LAYOUT_HEIGHT}, text strip: {TEXT_STRIP_HEIGHT}px)")
+    print(
+        f"Display: {WIDTH}x{HEIGHT} = {WIDTH * HEIGHT:,} pixels"
+        f" (layout: {WIDTH}x{LAYOUT_HEIGHT}, text strip: {TEXT_STRIP_HEIGHT}px)"
+    )
     print(f"Utilisation: {total_params / (WIDTH * HEIGHT) * 100:.1f}%")
 
     sections = default_sections(n_layer=args.n_layer)
@@ -111,102 +220,117 @@ def main() -> None:
 
     layout_path = output_dir / "layout.json"
     layout_path.write_text(
-        json.dumps({name: rect.to_dict() for name, rect in layout.items()}, indent=2)
+        json.dumps(
+            {name: rect.to_dict() for name, rect in layout.items()}, indent=2
+        )
     )
     print(f"\nLayout saved to {layout_path}")
 
     renderer = None
     flat_order = None
     if args.save_images:
-        renderer = OffscreenRenderer(WIDTH, HEIGHT, text_strip_height=TEXT_STRIP_HEIGHT)
+        renderer = OffscreenRenderer(
+            WIDTH, HEIGHT, text_strip_height=TEXT_STRIP_HEIGHT
+        )
         flat_order = layout_to_flat_order(layout)
         print(f"Renderer initialised ({WIDTH}x{HEIGHT})")
+
+    listener = None
+    if not args.no_mic:
+        from brainscan.stt import SpeechListener
+
+        listener = SpeechListener(
+            model_size=args.whisper_model,
+            device=args.whisper_device,
+            chunk_seconds=args.chunk_seconds,
+            silence_threshold=args.silence_threshold,
+            min_speech_seconds=args.min_speech_seconds,
+            max_speech_seconds=args.max_speech_seconds,
+        )
+        listener.start()
+        print("Microphone listener started")
 
     optimiser = torch.optim.AdamW(model.parameters(), lr=args.lr)
     prev_weights = capture_weights(model)
 
-    print(f"\nTraining for {args.steps} steps...")
+    gen_chars: list[int] = []
+    gen_probs: list[float] = []
+
+    print("\nTraining started (Ctrl+C to stop)...")
     t0 = time.time()
+    step = 0
 
-    for step in range(args.steps):
-        x, y = prepare_batches(data, args.batch_size, args.sequence_len, device)
-        _, loss = model(x, y)
-        optimiser.zero_grad()
-        loss.backward()
-        optimiser.step()
+    try:
+        while True:
+            if args.steps > 0 and step >= args.steps:
+                break
 
-        if step % args.snapshot_every == 0 or step == args.steps - 1:
-            current_weights = capture_weights(model)
-            deltas = capture_weight_deltas(current_weights, prev_weights)
-            prev_weights = current_weights
+            if listener is not None:
+                new_texts = listener.get_text()
+                for text in new_texts:
+                    log.info("Audience: %s", text)
+                    prompt = text.encode("utf-8", errors="replace")
+                    gen_chars, gen_probs = generate(
+                        model, prompt, args.gen_tokens, device, args.sequence_len
+                    )
+                    generated = decode(gen_chars)
+                    log.info("Response: %s", generated[:200])
+                    training_data.append(text)
 
-            dt = time.time() - t0
-            print(f"step {step:5d} | loss {loss.item():.4f} | {dt:.1f}s")
+            x, y = prepare_batches(
+                training_data, args.batch_size, args.sequence_len, device
+            )
+            _, loss = model(x, y)
+            optimiser.zero_grad()
+            loss.backward()
+            optimiser.step()
 
-            if renderer is not None:
-                np_weights = {k: v.cpu().numpy() for k, v in current_weights.items()}
-                flat, count = flatten_weights(np_weights, layout_order=flat_order)
-                normed = normalise_weights(flat)
-                buf = np.zeros(WIDTH * HEIGHT, dtype=np.float32)
-                buf[:count] = normed
-                canvas = renderer.render(buf)
-                save_frame(canvas, frames_dir / f"weights_{step:06d}.png")
+            if step % args.snapshot_every == 0:
+                current_weights = capture_weights(model)
+                deltas = capture_weight_deltas(current_weights, prev_weights)
+                prev_weights = current_weights
 
-                np_deltas = {k: v.cpu().numpy() for k, v in deltas.items()}
-                flat_d, count_d = flatten_weights(np_deltas, layout_order=flat_order)
-                normed_d = normalise_weights(flat_d)
-                buf_d = np.zeros(WIDTH * HEIGHT, dtype=np.float32)
-                buf_d[:count_d] = normed_d
-                canvas_d = renderer.render(buf_d)
-                save_frame(canvas_d, frames_dir / f"deltas_{step:06d}.png")
+                dt = time.time() - t0
+                data_size = len(training_data)
+                print(
+                    f"step {step:5d} | loss {loss.item():.4f}"
+                    f" | data {data_size:,}B | {dt:.1f}s"
+                )
+
+                if not gen_chars:
+                    gen_chars, gen_probs = generate(
+                        model,
+                        b"ROMEO: ",
+                        args.gen_tokens,
+                        device,
+                        args.sequence_len,
+                    )
+
+                if renderer is not None:
+                    canvas = render_frame(
+                        renderer,
+                        current_weights,
+                        flat_order,
+                        gen_chars,
+                        gen_probs,
+                    )
+                    save_frame(canvas, frames_dir / f"frame_{step:06d}.png")
+
+            step += 1
+
+    except KeyboardInterrupt:
+        print("\nStopping...")
+
+    if listener is not None:
+        listener.stop()
+        print("Microphone listener stopped")
 
     total_time = time.time() - t0
-    print(
-        f"\nDone. {args.steps} steps in {total_time:.1f}s"
-        f" ({args.steps / total_time:.1f} steps/s)"
-    )
-
-    print("\nRunning inference with activation capture...")
-    cap = ActivationCapture(model)
-    cap.install()
-    prompt = b"ROMEO: "
-    tokens = list(prompt)
-    x = torch.tensor([tokens], dtype=torch.long, device=device)
-    with torch.no_grad():
-        logits, _ = model(x)
-    print(f"Captured {len(cap.activations)} activation tensors")
-    for name, act in cap.activations.items():
-        print(f"  {name}: {list(act.shape)}")
-    cap.remove()
-
-    print(f"\nSample generation from prompt '{prompt.decode()}':")
-    model.eval()
-    context = torch.tensor([tokens], dtype=torch.long, device=device)
-    gen_chars = list(tokens)
-    gen_probs = [1.0] * len(tokens)
-    with torch.no_grad():
-        for _ in range(200):
-            logits, _ = model(context[:, -args.sequence_len :])
-            probs = torch.softmax(logits[:, -1, :], dim=-1)
-            next_token = torch.multinomial(probs, num_samples=1)
-            token_prob = probs[0, next_token.item()].item()
-            gen_chars.append(next_token.item())
-            gen_probs.append(token_prob)
-            context = torch.cat([context, next_token], dim=1)
-    generated = decode(context[0].tolist())
-    print(generated)
-
-    if renderer is not None:
-        text_chars = np.array(gen_chars, dtype=np.uint32)
-        text_probs = np.array(gen_probs, dtype=np.float32)
-        np_weights = {k: v.cpu().numpy() for k, v in current_weights.items()}
-        flat, count = flatten_weights(np_weights, layout_order=flat_order)
-        normed = normalise_weights(flat)
-        buf = np.zeros(WIDTH * HEIGHT, dtype=np.float32)
-        buf[:count] = normed
-        canvas = renderer.render(buf, text_chars=text_chars, text_probs=text_probs)
-        save_frame(canvas, frames_dir / "inference.png")
-        print(f"Inference frame saved to {frames_dir / 'inference.png'}")
+    if step > 0:
+        print(
+            f"Done. {step} steps in {total_time:.1f}s"
+            f" ({step / total_time:.1f} steps/s)"
+        )
 
 
 if __name__ == "__main__":
