@@ -11,7 +11,19 @@ import numpy as np
 from brainscan.model import GPT
 from brainscan.data import prepare_batches, load_text_dataset, decode
 from brainscan.snapshot import capture_weights, capture_weight_deltas, ActivationCapture
-from brainscan.layout import compute_layout, weights_to_image, WIDTH, HEIGHT
+from brainscan.layout import (
+    WIDTH,
+    HEIGHT,
+    compute_layout,
+    default_sections,
+    layout_summary,
+    layout_to_flat_order,
+)
+from brainscan.renderer import (
+    OffscreenRenderer,
+    flatten_weights,
+    normalise_weights,
+)
 
 
 def get_device() -> torch.device:
@@ -32,7 +44,7 @@ def download_shakespeare(data_dir: Path) -> Path:
 
 def save_frame(canvas: np.ndarray, path: Path) -> None:
     from PIL import Image
-    img = Image.fromarray(canvas)
+    img = Image.fromarray(canvas[:, :, :3])
     img.save(path)
 
 
@@ -75,18 +87,28 @@ def main() -> None:
         n_embd=args.n_embd,
     ).to(device)
 
-    param_groups = model.param_count()
-    print(f"Model: {param_groups['total']:,} parameters")
+    param_counts = {name: p.numel() for name, p in model.named_parameters()}
+    total_params = sum(param_counts.values())
+    print(f"Model: {total_params:,} parameters")
     print(f"Display: {WIDTH}x{HEIGHT} = {WIDTH * HEIGHT:,} pixels")
-    print(f"Utilisation: {param_groups['total'] / (WIDTH * HEIGHT) * 100:.1f}%")
-    for name, count in param_groups.items():
-        if name != "total":
-            print(f"  {name}: {count:,}")
+    print(f"Utilisation: {total_params / (WIDTH * HEIGHT) * 100:.1f}%")
 
-    layout = compute_layout(param_groups)
+    sections = default_sections(n_layer=args.n_layer)
+    layout = compute_layout(param_counts, sections=sections)
+    print(layout_summary(layout))
+
     layout_path = output_dir / "layout.json"
-    layout_path.write_text(json.dumps(layout, indent=2))
-    print(f"Layout saved to {layout_path}")
+    layout_path.write_text(
+        json.dumps({name: rect.to_dict() for name, rect in layout.items()}, indent=2)
+    )
+    print(f"\nLayout saved to {layout_path}")
+
+    renderer = None
+    flat_order = None
+    if args.save_images:
+        renderer = OffscreenRenderer(WIDTH, HEIGHT)
+        flat_order = layout_to_flat_order(layout)
+        print(f"Renderer initialised ({WIDTH}x{HEIGHT})")
 
     optimiser = torch.optim.AdamW(model.parameters(), lr=args.lr)
     prev_weights = capture_weights(model)
@@ -109,12 +131,22 @@ def main() -> None:
             dt = time.time() - t0
             print(f"step {step:5d} | loss {loss.item():.4f} | {dt:.1f}s")
 
-            if args.save_images:
-                canvas = weights_to_image(current_weights, layout)
+            if renderer is not None:
+                np_weights = {k: v.cpu().numpy() for k, v in current_weights.items()}
+                flat, count = flatten_weights(np_weights, layout_order=flat_order)
+                normed = normalise_weights(flat)
+                buf = np.zeros(WIDTH * HEIGHT, dtype=np.float32)
+                buf[:count] = normed
+                canvas = renderer.render(buf)
                 save_frame(canvas, frames_dir / f"weights_{step:06d}.png")
 
-                delta_canvas = weights_to_image(deltas, layout)
-                save_frame(delta_canvas, frames_dir / f"deltas_{step:06d}.png")
+                np_deltas = {k: v.cpu().numpy() for k, v in deltas.items()}
+                flat_d, count_d = flatten_weights(np_deltas, layout_order=flat_order)
+                normed_d = normalise_weights(flat_d)
+                buf_d = np.zeros(WIDTH * HEIGHT, dtype=np.float32)
+                buf_d[:count_d] = normed_d
+                canvas_d = renderer.render(buf_d)
+                save_frame(canvas_d, frames_dir / f"deltas_{step:06d}.png")
 
     total_time = time.time() - t0
     print(f"\nDone. {args.steps} steps in {total_time:.1f}s ({args.steps / total_time:.1f} steps/s)")
