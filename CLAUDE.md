@@ -13,6 +13,7 @@ of the display is a text strip showing inference output.
 - wgpu (WebGPU via wgpu-native/Vulkan) for GPU-side rendering and colourmaps
 - All commands: `mise exec -- uv run ...`
 - Tests: `mise exec -- uv run pytest tests/ -v`
+- Type checking: `mise exec -- uv run ty check`
 
 ## Code layout
 
