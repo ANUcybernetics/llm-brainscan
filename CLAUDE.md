@@ -19,7 +19,8 @@ of the display is a text strip showing inference output.
 ```
 src/brainscan/
 ├── model.py      # GPT model (vanilla transformer, char-level, vocab=256)
-├── data.py       # byte-level data loading and batching
+├── data.py       # byte-level data loading, batching, and TextBuffer
+├── stt.py        # speech-to-text input via faster-whisper + sounddevice
 ├── snapshot.py   # weight/activation capture for visualisation
 ├── layout.py     # maps param tensors to 8K canvas (left-to-right sections)
 ├── font.py       # bitmap font atlas (8x16 glyphs) for GPU text rendering
@@ -32,7 +33,9 @@ tests/
 ├── test_snapshot.py
 ├── test_layout.py
 ├── test_font.py
-└── test_renderer.py
+├── test_renderer.py
+├── test_text_buffer.py
+└── test_stt.py
 ```
 
 ## Key constraints

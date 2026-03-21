@@ -9,6 +9,8 @@ dependencies = [
     "pillow",
     "wgpu>=0.31",
     "rendercanvas",
+    "faster-whisper>=1.0",
+    "sounddevice",
 ]
 
 [dependency-groups]
