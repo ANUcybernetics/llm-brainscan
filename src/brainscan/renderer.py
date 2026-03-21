@@ -27,6 +27,7 @@ struct Uniforms {
     text_scale: u32,
     text_cols: u32,
     text_count: u32,
+    vmax: f32,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -125,8 +126,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         return vec4<f32>(0.05, 0.05, 0.05, 1.0);
     }
 
-    let w = weights[idx];
-    // Normalisation is done CPU-side before upload
+    let raw = weights[idx];
+    let w = select(raw / uniforms.vmax, 0.0, uniforms.vmax < 1e-10);
     var color: vec3<f32>;
     if uniforms.colormap == 1u {
         color = thermal(w);
@@ -163,14 +164,6 @@ def flatten_weights(
     return flat, len(flat)
 
 
-def normalise_weights(flat: np.ndarray) -> np.ndarray:
-    """Normalise to [-1, 1] range for colourmap input."""
-    vmax = np.max(np.abs(flat))
-    if vmax < 1e-10:
-        return np.zeros_like(flat)
-    return flat / vmax
-
-
 class OffscreenRenderer:
     """Render weight data to an offscreen texture and read back as numpy.
 
@@ -202,21 +195,28 @@ class OffscreenRenderer:
 
         self._shader = device.create_shader_module(code=SHADER_SOURCE)
 
-        self._uniform_data = np.array(
-            [
-                self.width,
-                self.height,
-                0,
-                self.colormap,
-                self.text_y,
-                self.text_scale,
-                self.text_cols,
-                0,
-            ],
-            dtype=np.uint32,
-        )
+        uniform_dtype = np.dtype([
+            ("width", np.uint32),
+            ("height", np.uint32),
+            ("param_count", np.uint32),
+            ("colormap", np.uint32),
+            ("text_y", np.uint32),
+            ("text_scale", np.uint32),
+            ("text_cols", np.uint32),
+            ("text_count", np.uint32),
+            ("vmax", np.float32),
+        ])
+        self._uniform_data = np.zeros(1, dtype=uniform_dtype)
+        self._uniform_data["width"] = self.width
+        self._uniform_data["height"] = self.height
+        self._uniform_data["colormap"] = self.colormap
+        self._uniform_data["text_y"] = self.text_y
+        self._uniform_data["text_scale"] = self.text_scale
+        self._uniform_data["text_cols"] = self.text_cols
+        # Round up to 4-byte alignment (already aligned at 36 bytes, but be safe)
+        uniform_size = max(uniform_dtype.itemsize, 36)
         self._uniform_buffer = device.create_buffer(
-            size=self._uniform_data.nbytes,
+            size=uniform_size,
             usage=wgpu.BufferUsage.UNIFORM | wgpu.BufferUsage.COPY_DST,
         )
 
@@ -287,7 +287,7 @@ class OffscreenRenderer:
                     "resource": {
                         "buffer": self._uniform_buffer,
                         "offset": 0,
-                        "size": self._uniform_data.nbytes,
+                        "size": self._uniform_buffer.size,
                     },
                 },
                 {
@@ -354,10 +354,13 @@ class OffscreenRenderer:
         text_chars: np.ndarray | None = None,
         text_probs: np.ndarray | None = None,
     ) -> np.ndarray:
-        """Render normalised weight data and return RGBA image as numpy array.
+        """Render weight data and return RGBA image as numpy array.
+
+        Normalisation is done on the GPU --- pass raw (unnormalised) weights.
+        Pre-normalised weights in [-1, 1] also work fine (vmax will be ~1.0).
 
         Args:
-            flat_weights: float32 array of normalised weights in [-1, 1].
+            flat_weights: float32 array of weight values.
             text_chars: uint32 array of character indices (byte values).
             text_probs: float32 array of per-character probabilities.
 
@@ -375,9 +378,11 @@ class OffscreenRenderer:
             device.queue.write_buffer(self._text_chars_buffer, 0, chars.tobytes())
             device.queue.write_buffer(self._text_probs_buffer, 0, probs.tobytes())
 
-        self._uniform_data[2] = param_count
-        self._uniform_data[3] = self.colormap
-        self._uniform_data[7] = text_count
+        vmax = float(np.max(np.abs(flat_weights))) if param_count > 0 else 0.0
+        self._uniform_data["param_count"] = param_count
+        self._uniform_data["colormap"] = self.colormap
+        self._uniform_data["text_count"] = text_count
+        self._uniform_data["vmax"] = vmax
         device.queue.write_buffer(self._uniform_buffer, 0, self._uniform_data.tobytes())
 
         weight_bytes = flat_weights.astype(np.float32).tobytes()

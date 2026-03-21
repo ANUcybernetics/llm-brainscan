@@ -5,36 +5,7 @@ from brainscan.renderer import (
     COLORMAP_THERMAL,
     OffscreenRenderer,
     flatten_weights,
-    normalise_weights,
 )
-
-
-class TestNormaliseWeights:
-    def test_normalises_to_unit_range(self):
-        data = np.array([2.0, -1.0, 0.5], dtype=np.float32)
-        result = normalise_weights(data)
-        assert result.max() == pytest.approx(1.0)
-        assert result.min() == pytest.approx(-0.5)
-
-    def test_symmetric_values(self):
-        data = np.array([-3.0, 0.0, 3.0], dtype=np.float32)
-        result = normalise_weights(data)
-        np.testing.assert_allclose(result, [-1.0, 0.0, 1.0])
-
-    def test_all_zeros(self):
-        data = np.zeros(10, dtype=np.float32)
-        result = normalise_weights(data)
-        np.testing.assert_allclose(result, np.zeros(10))
-
-    def test_single_value(self):
-        data = np.array([5.0], dtype=np.float32)
-        result = normalise_weights(data)
-        np.testing.assert_allclose(result, [1.0])
-
-    def test_preserves_dtype(self):
-        data = np.array([1.0, -1.0], dtype=np.float32)
-        result = normalise_weights(data)
-        assert result.dtype == np.float32
 
 
 class TestFlattenWeights:
@@ -103,6 +74,21 @@ class TestOffscreenRenderer:
         pixel = img[16, 16]
         assert pixel[2] > pixel[0], f"Expected B > R for negative weights, got {pixel}"
 
+    def test_gpu_normalisation_matches_range(self, small_renderer):
+        data = np.full(32 * 32, 5.0, dtype=np.float32)
+        img = small_renderer.render(data)
+        pixel = img[16, 16]
+        data_unit = np.ones(32 * 32, dtype=np.float32)
+        img_unit = small_renderer.render(data_unit)
+        pixel_unit = img_unit[16, 16]
+        np.testing.assert_array_equal(pixel, pixel_unit)
+
+    def test_gpu_normalisation_all_zeros(self, small_renderer):
+        data = np.zeros(32 * 32, dtype=np.float32)
+        img = small_renderer.render(data)
+        centre = img[16, 16, :3]
+        assert all(120 <= c <= 136 for c in centre), f"Expected ~128, got {centre}"
+
     def test_partial_fill(self, small_renderer):
         data = np.ones(100, dtype=np.float32)
         img = small_renderer.render(data)
@@ -128,8 +114,7 @@ class TestOffscreenRenderer:
         for w, h in [(16, 16), (64, 32), (100, 50)]:
             renderer = OffscreenRenderer(w, h)
             data = np.random.randn(w * h).astype(np.float32)
-            normed = normalise_weights(data)
-            img = renderer.render(normed)
+            img = renderer.render(data)
             assert img.shape == (h, w, 4)
 
     def test_multiple_renders(self, small_renderer):
@@ -153,11 +138,9 @@ class TestOffscreenRenderer:
         weights = capture_weights(model)
         np_weights = {k: v.cpu().numpy() for k, v in weights.items()}
         flat, count = flatten_weights(np_weights)
-        normed = normalise_weights(flat)
-        # Pad or truncate to renderer size
         buf = np.zeros(32 * 32, dtype=np.float32)
         n = min(count, 32 * 32)
-        buf[:n] = normed[:n]
+        buf[:n] = flat[:n]
         img = small_renderer.render(buf)
         assert img.shape == (32, 32, 4)
         assert np.any(img[:, :, :3] > 20), "Image should have non-background pixels"

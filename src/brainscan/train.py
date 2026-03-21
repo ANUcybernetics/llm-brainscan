@@ -31,7 +31,6 @@ from brainscan.model import GPT
 from brainscan.renderer import (
     OffscreenRenderer,
     flatten_weights,
-    normalise_weights,
 )
 from brainscan.snapshot import capture_weight_deltas, capture_weights
 
@@ -96,9 +95,8 @@ def render_frame(
 ) -> np.ndarray:
     np_weights = {k: v.cpu().numpy() for k, v in weights.items()}
     flat, count = flatten_weights(np_weights, layout_order=flat_order)
-    normed = normalise_weights(flat)
     buf = np.zeros(WIDTH * HEIGHT, dtype=np.float32)
-    buf[:count] = normed
+    buf[:count] = flat
     chars = np.array(text_chars, dtype=np.uint32) if text_chars else None
     probs = np.array(text_probs, dtype=np.float32) if text_probs else None
     return renderer.render(buf, text_chars=chars, text_probs=probs)
