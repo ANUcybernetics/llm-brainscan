@@ -20,24 +20,25 @@ of the display is a text strip showing inference output.
 
 ```
 src/brainscan/
-├── model.py      # GPT model (vanilla transformer, char-level, vocab=256)
-├── data.py       # byte-level data loading, batching, and TextBuffer
+├── model.py      # GPT model (vanilla transformer, char-level, vocab=256) + generate()
+├── data.py       # decode(), TextBuffer, prepare_batches
 ├── stt.py        # speech-to-text input via faster-whisper + sounddevice
-├── snapshot.py   # weight/activation capture for visualisation
+├── snapshot.py   # capture_weights() --- detached clone of all model params
 ├── layout.py     # maps param tensors to 8K canvas (left-to-right sections)
 ├── font.py       # bitmap font atlas (8x16 glyphs) for GPU text rendering
 ├── renderer.py   # wgpu offscreen/windowed renderer with WGSL shaders
-└── train.py      # training script with snapshot and rendering integration
+└── train.py      # training loop, prepare_display_buffers(), render_frame()
 tests/
-├── conftest.py   # shared fixtures (SMALL_CONFIG for fast tests)
-├── test_model.py
-├── test_data.py
-├── test_snapshot.py
-├── test_layout.py
-├── test_font.py
-├── test_renderer.py
-├── test_text_buffer.py
-└── test_stt.py
+├── conftest.py        # shared fixtures (SMALL_CONFIG, device, small_model)
+├── test_model.py      # architecture, forward pass, generate()
+├── test_data.py       # decode, prepare_batches
+├── test_snapshot.py   # capture_weights
+├── test_layout.py     # sections, compute_layout, overlaps, ordering
+├── test_font.py       # font atlas shape and glyph coverage
+├── test_renderer.py   # offscreen, live, text strip, display scaling
+├── test_text_buffer.py # TextBuffer append, persistence
+├── test_stt.py        # speech detection, transcription, audio loop
+└── test_train.py      # training loop, display buffers, render_frame, e2e
 ```
 
 ## Key constraints
@@ -63,8 +64,9 @@ order for the renderer's storage buffer.
 
 ## Rendering pipeline
 
-1. Capture weights as a dict of tensors (`snapshot.py`)
-2. Flatten in layout order (`renderer.py:flatten_weights`)
+1. Capture weights as a dict of tensors (`snapshot.py:capture_weights`)
+2. Prepare display buffers (`train.py:prepare_display_buffers`) --- flatten in
+   layout order, zero-pad to canvas size, convert text chars/probs to arrays
 3. Upload raw weights, font atlas, and text data to wgpu storage buffers
 4. Fragment shader normalises by vmax uniform, applies colourmap per pixel
    (top) and renders bitmap font text coloured by probability (bottom strip)
@@ -75,6 +77,15 @@ Two renderer classes share a `_RenderPipeline`:
 - `LiveRenderer`: fullscreen window via rendercanvas/GLFW, training runs in
   background thread, `update()` pushes data thread-safely, `--live` flag in
   `train.py`
+
+## Key APIs
+
+- `GPT.generate(prompt_bytes, max_tokens, device=None)` --- autoregressive
+  sampling, returns `(tokens, probs)`. Preserves training/eval mode.
+- `prepare_display_buffers(weights, flat_order, canvas_pixels, ...)` --- shared
+  helper for both offscreen and live rendering paths
+- `render_frame(renderer, weights, flat_order, ...)` --- convenience wrapper
+  that calls `prepare_display_buffers` with the renderer's own dimensions
 
 ## Conventions
 
