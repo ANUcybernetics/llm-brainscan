@@ -139,6 +139,11 @@ class TestOffscreenRenderer:
             img = small_renderer.render(data)
             assert img.shape == (32, 32, 4)
 
+    def test_render_with_text_no_strip(self, small_renderer):
+        data = np.zeros(32 * 32, dtype=np.float32)
+        img = small_renderer.render(data, text_chars=None, text_probs=None)
+        assert img.shape == (32, 32, 4)
+
     def test_render_with_model_weights(self, small_renderer):
         """Integration test: render actual model weight data."""
         from brainscan.model import GPT
@@ -156,3 +161,48 @@ class TestOffscreenRenderer:
         img = small_renderer.render(buf)
         assert img.shape == (32, 32, 4)
         assert np.any(img[:, :, :3] > 20), "Image should have non-background pixels"
+
+
+class TestTextStripRenderer:
+    @pytest.fixture
+    def text_renderer(self):
+        return OffscreenRenderer(64, 64, text_strip_height=32, text_scale=1)
+
+    def test_text_strip_dimensions(self, text_renderer):
+        assert text_renderer.text_y == 32
+        assert text_renderer.text_cols == 8  # 64 / (8 * 1)
+
+    def test_render_with_text(self, text_renderer):
+        weights = np.zeros(64 * 64, dtype=np.float32)
+        chars = np.array([ord("A"), ord("B"), ord("C")], dtype=np.uint32)
+        probs = np.array([1.0, 0.5, 0.1], dtype=np.float32)
+        img = text_renderer.render(weights, text_chars=chars, text_probs=probs)
+        assert img.shape == (64, 64, 4)
+
+    def test_text_pixels_differ_from_background(self, text_renderer):
+        weights = np.zeros(64 * 64, dtype=np.float32)
+        chars = np.array([ord("W")] * 8, dtype=np.uint32)
+        probs = np.ones(8, dtype=np.float32)
+        img = text_renderer.render(weights, text_chars=chars, text_probs=probs)
+        text_region = img[32:48, :, :3]
+        assert text_region.max() > 30, "Text region should have visible pixels"
+
+    def test_empty_text_is_dark(self, text_renderer):
+        weights = np.zeros(64 * 64, dtype=np.float32)
+        img = text_renderer.render(weights)
+        text_region = img[32:, :, :3]
+        assert text_region.max() < 30, f"Empty text region should be dark, got max {text_region.max()}"
+
+    def test_high_prob_brighter_than_low(self, text_renderer):
+        weights = np.zeros(64 * 64, dtype=np.float32)
+        chars_hi = np.array([ord("X")] * 8, dtype=np.uint32)
+        probs_hi = np.ones(8, dtype=np.float32)
+        img_hi = text_renderer.render(weights, text_chars=chars_hi, text_probs=probs_hi)
+
+        chars_lo = np.array([ord("X")] * 8, dtype=np.uint32)
+        probs_lo = np.full(8, 0.1, dtype=np.float32)
+        img_lo = text_renderer.render(weights, text_chars=chars_lo, text_probs=probs_lo)
+
+        hi_brightness = img_hi[32:48, :, :3].astype(float).sum()
+        lo_brightness = img_lo[32:48, :, :3].astype(float).sum()
+        assert hi_brightness > lo_brightness, "High probability text should be brighter"

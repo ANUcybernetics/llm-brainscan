@@ -3,6 +3,8 @@ import pytest
 from brainscan.layout import (
     GUTTER,
     HEIGHT,
+    LAYOUT_HEIGHT,
+    TEXT_STRIP_HEIGHT,
     WIDTH,
     Rect,
     Section,
@@ -74,7 +76,7 @@ class TestComputeLayout:
             assert rect.x >= 0
             assert rect.y >= 0
             assert rect.x + rect.w <= WIDTH, f"{rect.name} exceeds width"
-            assert rect.y + rect.h <= HEIGHT, f"{rect.name} exceeds height"
+            assert rect.y + rect.h <= LAYOUT_HEIGHT, f"{rect.name} exceeds layout height"
 
     def test_rect_area_covers_params(self, default_layout):
         for rect in default_layout.values():
@@ -135,6 +137,14 @@ class TestComputeLayout:
         embed_w = default_layout["wte.weight"].w
         block_w = default_layout["blocks.0.attn.c_attn.weight"].w
         assert embed_w < block_w
+
+
+class TestTextStripConstants:
+    def test_layout_height_plus_strip_equals_height(self):
+        assert LAYOUT_HEIGHT + TEXT_STRIP_HEIGHT == HEIGHT
+
+    def test_text_strip_height(self):
+        assert TEXT_STRIP_HEIGHT == 192
 
 
 class TestCustomLayout:

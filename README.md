@@ -43,8 +43,8 @@ saves weight visualisation frames to `output/frames/`.
 
 ## Architecture
 
-Default model: 8 layers, 9 attention heads, 576 embedding dim, 256 context
-window.
+Default model: 8 layers, 9 attention heads, 558 embedding dim, 256 context
+window (~30M parameters).
 
 ```
 src/brainscan/
@@ -52,15 +52,16 @@ src/brainscan/
 ├── data.py       # byte-level encode/decode and batching
 ├── snapshot.py   # weight capture, deltas, activation hooks
 ├── layout.py     # 8K canvas layout engine
+├── font.py       # bitmap font atlas for GPU text rendering
 ├── renderer.py   # wgpu offscreen/windowed renderer
 └── train.py      # training with snapshot integration
 ```
 
 ## Display layout
 
-Information flows left to right across the 8K canvas. Each transformer block
-is a column; matrices stack vertically within each column with small gutters
-between them.
+Information flows left to right across the 8K canvas. The top 4128px contains
+weight matrices (one pixel per parameter); the bottom 192px is a text strip
+showing generated text coloured by probability.
 
 ```
  7680px
@@ -70,31 +71,28 @@ between them.
 │e │─────────│─────────│─────────│─────────│─────────│─────────│─────────│─────────│f │ │
 │  │         │         │         │         │         │         │         │         │  │ │
 │  │ c_attn  │ c_attn  │ c_attn  │ c_attn  │ c_attn  │ c_attn  │ c_attn  │ c_attn  │  │ │
-│  │ QKV     │ QKV     │ QKV     │ QKV     │ QKV     │ QKV     │ QKV     │ QKV     │  │ │
+│  │ QKV     │ QKV     │ QKV     │ QKV     │ QKV     │ QKV     │ QKV     │ QKV     │  │4128px
 │  │         │         │         │         │         │         │         │         │  │ │
 │  │─────────│─────────│─────────│─────────│─────────│─────────│─────────│─────────│  │ │
 │  │ c_proj  │ c_proj  │ c_proj  │ c_proj  │ c_proj  │ c_proj  │ c_proj  │ c_proj  │  │ │
-├──│─────────│─────────│─────────│─────────│─────────│─────────│─────────│─────────│  │4320px
+├──│─────────│─────────│─────────│─────────│─────────│─────────│─────────│─────────│  │ │
 │wp│ ln2     │ ln2     │ ln2     │ ln2     │ ln2     │ ln2     │ ln2     │ ln2     │lm│ │
 │e │─────────│─────────│─────────│─────────│─────────│─────────│─────────│─────────│  │ │
 │  │         │         │         │         │         │         │         │         │hd│ │
-│  │         │         │         │         │         │         │         │         │  │ │
 │  │ mlp.fc  │ mlp.fc  │ mlp.fc  │ mlp.fc  │ mlp.fc  │ mlp.fc  │ mlp.fc  │ mlp.fc  │  │ │
-│  │         │         │         │         │         │         │         │         │  │ │
 │  │─────────│─────────│─────────│─────────│─────────│─────────│─────────│─────────│  │ │
-│  │         │         │         │         │         │         │         │         │  │ │
 │  │mlp.proj │mlp.proj │mlp.proj │mlp.proj │mlp.proj │mlp.proj │mlp.proj │mlp.proj │  │ │
-│  │         │         │         │         │         │         │         │         │  │ │
-└──┴─────────┴─────────┴─────────┴─────────┴─────────┴─────────┴─────────┴─────────┴──┘ ▼
- ▲   block 0   block 1   block 2   block 3   block 4   block 5   block 6   block 7   ▲
-embed                                                                               output
-69px                          929px per block                                        35px
+├──┴─────────┴─────────┴─────────┴─────────┴─────────┴─────────┴─────────┴─────────┴──┤ ▼
+│ Generated text output (bitmap font, 3× scale, coloured by probability)       192px │
+│ ROMEO: O, she doth teach the torches to burn bright! It seems she hangs upon the    │4320px
+│ cheek of night Like a rich jewel in an Ethiope's ear...                              │
+│                                                                                      │
+└──────────────────────────────────────────────────────────────────────────────────────┘ ▼
 ```
 
-Each block column is 929px wide and fills the full 4320px height. The two MLP
-matrices (c_fc and c_proj) dominate each column (~67% of block area), with the
-attention matrices above them. Embeddings and the output head are narrow columns
-on the left and right edges.
+The weight layout fills the top 4128px. Embeddings and output head are narrow
+columns on the left and right edges. The text strip renders 320 × 4 characters
+at 3× scale, with brightness indicating token confidence.
 
 ## Hardware
 

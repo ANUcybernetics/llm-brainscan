@@ -4,6 +4,9 @@ The renderer takes flattened weight data (one float per pixel), uploads it to a
 storage buffer, and runs a fragment shader that applies a colourmap to produce
 the final image. All colourmap computation happens on the GPU.
 
+The bottom strip of the canvas can display generated text using a bitmap font,
+with each character coloured by its softmax probability.
+
 Can operate in two modes:
 - offscreen: render to a texture, read back as numpy array
 - windowed: render to a canvas via rendercanvas (for live display)
@@ -20,10 +23,17 @@ struct Uniforms {
     height: u32,
     param_count: u32,
     colormap: u32,
+    text_y: u32,
+    text_scale: u32,
+    text_cols: u32,
+    text_count: u32,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
 @group(0) @binding(1) var<storage, read> weights: array<f32>;
+@group(0) @binding(2) var<storage, read> font_data: array<u32>;
+@group(0) @binding(3) var<storage, read> text_chars: array<u32>;
+@group(0) @binding(4) var<storage, read> text_probs: array<f32>;
 
 struct VertexOutput {
     @builtin(position) pos: vec4<f32>,
@@ -67,10 +77,48 @@ fn thermal(v: f32) -> vec3<f32> {
     return vec3<f32>(r, g, b);
 }
 
+fn font_pixel(char_idx: u32, gx: u32, gy: u32) -> bool {
+    let byte_offset = char_idx * 16u + gy;
+    let word_idx = byte_offset / 4u;
+    let byte_in_word = byte_offset % 4u;
+    let word = font_data[word_idx];
+    let byte_val = (word >> (byte_in_word * 8u)) & 0xFFu;
+    return (byte_val & (0x80u >> gx)) != 0u;
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let px = u32(in.uv.x * f32(uniforms.width));
     let py = u32(in.uv.y * f32(uniforms.height));
+
+    if uniforms.text_y > 0u && py >= uniforms.text_y {
+        let text_py = py - uniforms.text_y;
+        let scale = uniforms.text_scale;
+        let cell_w = 8u * scale;
+        let cell_h = 16u * scale;
+        let col = px / cell_w;
+        let row = text_py / cell_h;
+        let char_pos = row * uniforms.text_cols + col;
+
+        if char_pos < uniforms.text_count {
+            let glyph = text_chars[char_pos];
+            let gx = (px % cell_w) / scale;
+            let gy = (text_py % cell_h) / scale;
+
+            if font_pixel(glyph, gx, gy) {
+                let prob = text_probs[char_pos];
+                let brightness = 0.25 + prob * 0.75;
+                return vec4<f32>(
+                    brightness,
+                    brightness * 0.95,
+                    brightness * 0.85,
+                    1.0,
+                );
+            }
+        }
+        return vec4<f32>(0.02, 0.02, 0.02, 1.0);
+    }
+
     let idx = py * uniforms.width + px;
 
     if idx >= uniforms.param_count {
@@ -91,6 +139,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
 COLORMAP_DIVERGING = 0
 COLORMAP_THERMAL = 1
+
+TEXT_SCALE_DEFAULT = 3
 
 
 def get_device() -> wgpu.GPUDevice:
@@ -122,7 +172,11 @@ def normalise_weights(flat: np.ndarray) -> np.ndarray:
 
 
 class OffscreenRenderer:
-    """Render weight data to an offscreen texture and read back as numpy."""
+    """Render weight data to an offscreen texture and read back as numpy.
+
+    Optionally renders a text strip at the bottom of the canvas showing
+    generated text coloured by token probability.
+    """
 
     def __init__(
         self,
@@ -130,10 +184,16 @@ class OffscreenRenderer:
         height: int,
         device: wgpu.GPUDevice | None = None,
         colormap: int = COLORMAP_DIVERGING,
+        text_strip_height: int = 0,
+        text_scale: int = TEXT_SCALE_DEFAULT,
     ):
         self.width = width
         self.height = height
         self.colormap = colormap
+        self.text_strip_height = text_strip_height
+        self.text_scale = text_scale
+        self.text_y = height - text_strip_height if text_strip_height > 0 else 0
+        self.text_cols = width // (8 * text_scale) if text_strip_height > 0 else 0
         self.device = device or get_device()
         self._setup_pipeline()
 
@@ -143,7 +203,17 @@ class OffscreenRenderer:
         self._shader = device.create_shader_module(code=SHADER_SOURCE)
 
         self._uniform_data = np.array(
-            [self.width, self.height, 0, self.colormap], dtype=np.uint32
+            [
+                self.width,
+                self.height,
+                0,
+                self.colormap,
+                self.text_y,
+                self.text_scale,
+                self.text_cols,
+                0,
+            ],
+            dtype=np.uint32,
         )
         self._uniform_buffer = device.create_buffer(
             size=self._uniform_data.nbytes,
@@ -156,6 +226,29 @@ class OffscreenRenderer:
             usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST,
         )
 
+        font_size = max(1024 * 4, 4)
+        self._font_buffer = device.create_buffer(
+            size=font_size,
+            usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST,
+        )
+
+        max_text = max(self.text_cols * (self.text_strip_height // (16 * self.text_scale)), 1)
+        self._text_chars_buffer = device.create_buffer(
+            size=max_text * 4,
+            usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST,
+        )
+        self._text_probs_buffer = device.create_buffer(
+            size=max_text * 4,
+            usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST,
+        )
+        self._max_text = max_text
+
+        if self.text_strip_height > 0:
+            from brainscan.font import generate_font_atlas
+
+            font_data = generate_font_atlas()
+            device.queue.write_buffer(self._font_buffer, 0, font_data.tobytes())
+
         bind_group_layout = device.create_bind_group_layout(
             entries=[
                 {
@@ -165,6 +258,21 @@ class OffscreenRenderer:
                 },
                 {
                     "binding": 1,
+                    "visibility": wgpu.ShaderStage.FRAGMENT,
+                    "buffer": {"type": wgpu.BufferBindingType.read_only_storage},
+                },
+                {
+                    "binding": 2,
+                    "visibility": wgpu.ShaderStage.FRAGMENT,
+                    "buffer": {"type": wgpu.BufferBindingType.read_only_storage},
+                },
+                {
+                    "binding": 3,
+                    "visibility": wgpu.ShaderStage.FRAGMENT,
+                    "buffer": {"type": wgpu.BufferBindingType.read_only_storage},
+                },
+                {
+                    "binding": 4,
                     "visibility": wgpu.ShaderStage.FRAGMENT,
                     "buffer": {"type": wgpu.BufferBindingType.read_only_storage},
                 },
@@ -188,6 +296,30 @@ class OffscreenRenderer:
                         "buffer": self._weight_buffer,
                         "offset": 0,
                         "size": self._weight_buffer.size,
+                    },
+                },
+                {
+                    "binding": 2,
+                    "resource": {
+                        "buffer": self._font_buffer,
+                        "offset": 0,
+                        "size": self._font_buffer.size,
+                    },
+                },
+                {
+                    "binding": 3,
+                    "resource": {
+                        "buffer": self._text_chars_buffer,
+                        "offset": 0,
+                        "size": self._text_chars_buffer.size,
+                    },
+                },
+                {
+                    "binding": 4,
+                    "resource": {
+                        "buffer": self._text_probs_buffer,
+                        "offset": 0,
+                        "size": self._text_probs_buffer.size,
                     },
                 },
             ],
@@ -216,11 +348,18 @@ class OffscreenRenderer:
             usage=wgpu.TextureUsage.RENDER_ATTACHMENT | wgpu.TextureUsage.COPY_SRC,
         )
 
-    def render(self, flat_weights: np.ndarray) -> np.ndarray:
+    def render(
+        self,
+        flat_weights: np.ndarray,
+        text_chars: np.ndarray | None = None,
+        text_probs: np.ndarray | None = None,
+    ) -> np.ndarray:
         """Render normalised weight data and return RGBA image as numpy array.
 
         Args:
             flat_weights: float32 array of normalised weights in [-1, 1].
+            text_chars: uint32 array of character indices (byte values).
+            text_probs: float32 array of per-character probabilities.
 
         Returns:
             RGBA uint8 numpy array of shape (height, width, 4).
@@ -228,8 +367,17 @@ class OffscreenRenderer:
         device = self.device
         param_count = len(flat_weights)
 
+        text_count = 0
+        if text_chars is not None and text_probs is not None:
+            text_count = min(len(text_chars), self._max_text)
+            chars = text_chars[:text_count].astype(np.uint32)
+            probs = text_probs[:text_count].astype(np.float32)
+            device.queue.write_buffer(self._text_chars_buffer, 0, chars.tobytes())
+            device.queue.write_buffer(self._text_probs_buffer, 0, probs.tobytes())
+
         self._uniform_data[2] = param_count
         self._uniform_data[3] = self.colormap
+        self._uniform_data[7] = text_count
         device.queue.write_buffer(self._uniform_buffer, 0, self._uniform_data.tobytes())
 
         weight_bytes = flat_weights.astype(np.float32).tobytes()

@@ -15,6 +15,8 @@ from dataclasses import dataclass
 
 WIDTH = 7680
 HEIGHT = 4320
+TEXT_STRIP_HEIGHT = 192
+LAYOUT_HEIGHT = HEIGHT - TEXT_STRIP_HEIGHT
 TOTAL_PIXELS = WIDTH * HEIGHT
 GUTTER = 4
 
@@ -72,22 +74,33 @@ def _section_param_total(section: Section, param_counts: dict[str, int]) -> int:
     return sum(param_counts.get(name, 0) for name in section.param_names)
 
 
-def _column_width(total_params: int, height: int, gutter: int, n_items: int) -> int:
-    """Compute the column width that fits total_params in the given height.
+def _column_width(
+    item_counts: list[int], height: int, gutter: int
+) -> int:
+    """Compute the minimum column width that fits all items in the given height.
 
-    Accounts for gutters between items within the column.
+    Uses the total param count as a starting estimate, then widens if
+    accumulated per-item ceil() rounding causes overflow.
     """
+    n_items = len(item_counts)
+    total_params = sum(item_counts)
     avail_h = height - max(0, n_items - 1) * gutter
     if avail_h <= 0:
         return total_params
-    return max(1, math.ceil(total_params / avail_h))
+    col_w = max(1, math.ceil(total_params / avail_h))
+    while True:
+        used = sum(math.ceil(c / col_w) for c in item_counts)
+        total_h = used + max(0, n_items - 1) * gutter
+        if total_h <= height:
+            return col_w
+        col_w += 1
 
 
 def compute_layout(
     param_counts: dict[str, int],
     sections: list[Section] | None = None,
     width: int = WIDTH,
-    height: int = HEIGHT,
+    height: int = LAYOUT_HEIGHT,
     gutter: int = GUTTER,
 ) -> dict[str, Rect]:
     """Compute pixel layout for all parameters.
@@ -107,11 +120,12 @@ def compute_layout(
 
     section_widths: list[int] = []
     for section in sections:
-        total = _section_param_total(section, param_counts)
-        n_items = sum(
-            1 for name in section.param_names if param_counts.get(name, 0) > 0
-        )
-        col_w = _column_width(total, height, gutter, n_items)
+        item_counts = [
+            param_counts[name]
+            for name in section.param_names
+            if param_counts.get(name, 0) > 0
+        ]
+        col_w = _column_width(item_counts, height, gutter)
         section_widths.append(col_w)
 
     total_gutters = max(0, len(sections) - 1) * gutter

@@ -11,6 +11,8 @@ import torch
 from brainscan.data import decode, load_text_dataset, prepare_batches
 from brainscan.layout import (
     HEIGHT,
+    LAYOUT_HEIGHT,
+    TEXT_STRIP_HEIGHT,
     WIDTH,
     compute_layout,
     default_sections,
@@ -57,7 +59,7 @@ def main() -> None:
     )
     parser.add_argument("--n-layer", type=int, default=8)
     parser.add_argument("--n-head", type=int, default=9)
-    parser.add_argument("--n-embd", type=int, default=576)
+    parser.add_argument("--n-embd", type=int, default=558)
     parser.add_argument("--sequence-len", type=int, default=256)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--lr", type=float, default=3e-4)
@@ -100,7 +102,7 @@ def main() -> None:
     param_counts = {name: p.numel() for name, p in model.named_parameters()}
     total_params = sum(param_counts.values())
     print(f"Model: {total_params:,} parameters")
-    print(f"Display: {WIDTH}x{HEIGHT} = {WIDTH * HEIGHT:,} pixels")
+    print(f"Display: {WIDTH}x{HEIGHT} = {WIDTH * HEIGHT:,} pixels (layout: {WIDTH}x{LAYOUT_HEIGHT}, text strip: {TEXT_STRIP_HEIGHT}px)")
     print(f"Utilisation: {total_params / (WIDTH * HEIGHT) * 100:.1f}%")
 
     sections = default_sections(n_layer=args.n_layer)
@@ -116,7 +118,7 @@ def main() -> None:
     renderer = None
     flat_order = None
     if args.save_images:
-        renderer = OffscreenRenderer(WIDTH, HEIGHT)
+        renderer = OffscreenRenderer(WIDTH, HEIGHT, text_strip_height=TEXT_STRIP_HEIGHT)
         flat_order = layout_to_flat_order(layout)
         print(f"Renderer initialised ({WIDTH}x{HEIGHT})")
 
@@ -180,14 +182,31 @@ def main() -> None:
     print(f"\nSample generation from prompt '{prompt.decode()}':")
     model.eval()
     context = torch.tensor([tokens], dtype=torch.long, device=device)
+    gen_chars = list(tokens)
+    gen_probs = [1.0] * len(tokens)
     with torch.no_grad():
         for _ in range(200):
             logits, _ = model(context[:, -args.sequence_len :])
             probs = torch.softmax(logits[:, -1, :], dim=-1)
             next_token = torch.multinomial(probs, num_samples=1)
+            token_prob = probs[0, next_token.item()].item()
+            gen_chars.append(next_token.item())
+            gen_probs.append(token_prob)
             context = torch.cat([context, next_token], dim=1)
     generated = decode(context[0].tolist())
     print(generated)
+
+    if renderer is not None:
+        text_chars = np.array(gen_chars, dtype=np.uint32)
+        text_probs = np.array(gen_probs, dtype=np.float32)
+        np_weights = {k: v.cpu().numpy() for k, v in current_weights.items()}
+        flat, count = flatten_weights(np_weights, layout_order=flat_order)
+        normed = normalise_weights(flat)
+        buf = np.zeros(WIDTH * HEIGHT, dtype=np.float32)
+        buf[:count] = normed
+        canvas = renderer.render(buf, text_chars=text_chars, text_probs=text_probs)
+        save_frame(canvas, frames_dir / "inference.png")
+        print(f"Inference frame saved to {frames_dir / 'inference.png'}")
 
 
 if __name__ == "__main__":

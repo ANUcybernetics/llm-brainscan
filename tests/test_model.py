@@ -2,6 +2,7 @@ import pytest
 import torch
 from conftest import SMALL_CONFIG
 
+from brainscan.layout import LAYOUT_HEIGHT, WIDTH
 from brainscan.model import GPT
 
 
@@ -10,7 +11,7 @@ class TestGPTArchitecture:
         model = GPT()
         total = model.param_count()["total"]
         assert total > 0
-        assert total <= 7680 * 4320
+        assert total <= WIDTH * LAYOUT_HEIGHT
 
     def test_creates_with_small_config(self, small_model):
         assert small_model is not None
@@ -25,10 +26,11 @@ class TestGPTArchitecture:
         pytorch_total = sum(p.numel() for p in small_model.parameters())
         assert groups["total"] == pytorch_total
 
-    def test_default_model_fits_8k(self):
+    def test_default_model_fits_layout(self):
         model = GPT()
         total = model.param_count()["total"]
-        assert total <= 7680 * 4320, f"{total} params exceeds 8K pixel count"
+        layout_pixels = WIDTH * LAYOUT_HEIGHT
+        assert total <= layout_pixels, f"{total} params exceeds layout area {layout_pixels}"
 
     def test_has_expected_blocks(self, small_model):
         groups = small_model.param_count()
