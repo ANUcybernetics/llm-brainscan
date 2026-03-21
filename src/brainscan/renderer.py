@@ -436,6 +436,11 @@ class LiveRenderer:
     push new weight data. The canvas event loop runs on the main thread via
     ``run()``. Rendering goes straight to the display surface --- no GPU
     readback.
+
+    The render pipeline always operates at the logical resolution (``width`` x
+    ``height``). If the display is smaller, the fragment shader naturally
+    downsamples via UV mapping --- each output pixel maps to the nearest
+    logical pixel.
     """
 
     def __init__(
@@ -450,16 +455,19 @@ class LiveRenderer:
         fullscreen: bool = True,
         max_fps: int = 30,
         canvas: object | None = None,
+        display_size: tuple[int, int] | None = None,
     ):
         self.width = width
         self.height = height
         self.device = device or get_device()
 
+        window_w, window_h = display_size or (width, height)
+
         if canvas is None:
             from rendercanvas.glfw import RenderCanvas
 
             canvas = RenderCanvas(
-                size=(width, height),
+                size=(window_w, window_h),
                 title="LLM Brainscan",
                 update_mode="continuous",
                 max_fps=max_fps,

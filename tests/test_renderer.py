@@ -284,3 +284,123 @@ class TestLiveRenderer:
         assert img_live.shape == img_offscreen.shape
         np.testing.assert_array_equal(img_live, img_offscreen)
         live.close()
+
+
+class TestDisplayScaling:
+    """Test that rendering at a logical size larger than the display works."""
+
+    def test_smaller_display_produces_output(self):
+        device = get_device()
+        logical_w, logical_h = 64, 64
+        display_w, display_h = 16, 16
+
+        canvas = _make_offscreen_canvas(display_w, display_h)
+        live = LiveRenderer(
+            logical_w,
+            logical_h,
+            device=device,
+            fullscreen=False,
+            canvas=canvas,
+            display_size=(display_w, display_h),
+        )
+        weights = np.random.randn(logical_w * logical_h).astype(np.float32)
+        live.update(weights)
+        canvas.force_draw()
+        img = canvas._last_image
+
+        assert img is not None, "Scaled renderer should produce output"
+        assert img.shape[0] == display_h
+        assert img.shape[1] == display_w
+        assert img.shape[2] == 4
+        live.close()
+
+    def test_scaled_pixels_match_logical_nearest_neighbour(self):
+        device = get_device()
+        logical_w, logical_h = 32, 32
+        display_w, display_h = 16, 16
+
+        data = np.zeros(logical_w * logical_h, dtype=np.float32)
+        data[:logical_w * (logical_h // 2)] = 1.0
+        data[logical_w * (logical_h // 2):] = -1.0
+
+        offscreen = OffscreenRenderer(logical_w, logical_h, device=device)
+        img_full = offscreen.render(data)
+
+        canvas = _make_offscreen_canvas(display_w, display_h)
+        live = LiveRenderer(
+            logical_w,
+            logical_h,
+            device=device,
+            fullscreen=False,
+            canvas=canvas,
+            display_size=(display_w, display_h),
+        )
+        live.update(data)
+        canvas.force_draw()
+        img_scaled = canvas._last_image
+
+        assert img_scaled is not None
+        top_half = img_scaled[:display_h // 2, :, 0].mean()
+        bottom_half = img_scaled[display_h // 2:, :, 0].mean()
+        top_full = img_full[:logical_h // 2, :, 0].mean()
+        bottom_full = img_full[logical_h // 2:, :, 0].mean()
+        assert top_half > bottom_half, "Top half should be redder (positive weights)"
+        assert top_full > bottom_full, "Sanity: full-res should show same pattern"
+        live.close()
+
+    def test_same_size_display_unchanged(self):
+        device = get_device()
+        weights = np.random.randn(32 * 32).astype(np.float32)
+
+        canvas_a = _make_offscreen_canvas(32, 32)
+        live_a = LiveRenderer(
+            32, 32, device=device, fullscreen=False, canvas=canvas_a
+        )
+        live_a.update(weights)
+        canvas_a.force_draw()
+        img_a = canvas_a._last_image
+
+        canvas_b = _make_offscreen_canvas(32, 32)
+        live_b = LiveRenderer(
+            32, 32,
+            device=device,
+            fullscreen=False,
+            canvas=canvas_b,
+            display_size=(32, 32),
+        )
+        live_b.update(weights)
+        canvas_b.force_draw()
+        img_b = canvas_b._last_image
+
+        assert img_a is not None and img_b is not None
+        np.testing.assert_array_equal(img_a, img_b)
+        live_a.close()
+        live_b.close()
+
+    def test_text_strip_with_scaled_display(self):
+        device = get_device()
+        logical_w, logical_h = 64, 64
+        display_w, display_h = 32, 32
+
+        canvas = _make_offscreen_canvas(display_w, display_h)
+        live = LiveRenderer(
+            logical_w,
+            logical_h,
+            device=device,
+            fullscreen=False,
+            canvas=canvas,
+            display_size=(display_w, display_h),
+            text_strip_height=16,
+            text_scale=1,
+        )
+        weights = np.zeros(logical_w * logical_h, dtype=np.float32)
+        chars = np.array([ord("X")] * 8, dtype=np.uint32)
+        probs = np.ones(8, dtype=np.float32)
+        live.update(weights, text_chars=chars, text_probs=probs)
+        canvas.force_draw()
+        img = canvas._last_image
+
+        assert img is not None
+        assert img.shape == (display_h, display_w, 4)
+        assert img[-1, :, :3].max() > 0, "Bottom of scaled display should show text"
+        live.close()
