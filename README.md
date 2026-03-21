@@ -52,8 +52,49 @@ src/brainscan/
 ├── data.py       # byte-level encode/decode and batching
 ├── snapshot.py   # weight capture, deltas, activation hooks
 ├── layout.py     # 8K canvas layout engine
+├── renderer.py   # wgpu offscreen/windowed renderer
 └── train.py      # training with snapshot integration
 ```
+
+## Display layout
+
+Information flows left to right across the 8K canvas. Each transformer block
+is a column; matrices stack vertically within each column with small gutters
+between them.
+
+```
+ 7680px
+◄──────────────────────────────────────────────────────────────────────►
+┌──┬─────────┬─────────┬─────────┬─────────┬─────────┬─────────┬─────────┬─────────┬──┐ ▲
+│wt│ ln1     │ ln1     │ ln1     │ ln1     │ ln1     │ ln1     │ ln1     │ ln1     │ln│ │
+│e │─────────│─────────│─────────│─────────│─────────│─────────│─────────│─────────│f │ │
+│  │         │         │         │         │         │         │         │         │  │ │
+│  │ c_attn  │ c_attn  │ c_attn  │ c_attn  │ c_attn  │ c_attn  │ c_attn  │ c_attn  │  │ │
+│  │ QKV     │ QKV     │ QKV     │ QKV     │ QKV     │ QKV     │ QKV     │ QKV     │  │ │
+│  │         │         │         │         │         │         │         │         │  │ │
+│  │─────────│─────────│─────────│─────────│─────────│─────────│─────────│─────────│  │ │
+│  │ c_proj  │ c_proj  │ c_proj  │ c_proj  │ c_proj  │ c_proj  │ c_proj  │ c_proj  │  │ │
+├──│─────────│─────────│─────────│─────────│─────────│─────────│─────────│─────────│  │4320px
+│wp│ ln2     │ ln2     │ ln2     │ ln2     │ ln2     │ ln2     │ ln2     │ ln2     │lm│ │
+│e │─────────│─────────│─────────│─────────│─────────│─────────│─────────│─────────│  │ │
+│  │         │         │         │         │         │         │         │         │hd│ │
+│  │         │         │         │         │         │         │         │         │  │ │
+│  │ mlp.fc  │ mlp.fc  │ mlp.fc  │ mlp.fc  │ mlp.fc  │ mlp.fc  │ mlp.fc  │ mlp.fc  │  │ │
+│  │         │         │         │         │         │         │         │         │  │ │
+│  │─────────│─────────│─────────│─────────│─────────│─────────│─────────│─────────│  │ │
+│  │         │         │         │         │         │         │         │         │  │ │
+│  │mlp.proj │mlp.proj │mlp.proj │mlp.proj │mlp.proj │mlp.proj │mlp.proj │mlp.proj │  │ │
+│  │         │         │         │         │         │         │         │         │  │ │
+└──┴─────────┴─────────┴─────────┴─────────┴─────────┴─────────┴─────────┴─────────┴──┘ ▼
+ ▲   block 0   block 1   block 2   block 3   block 4   block 5   block 6   block 7   ▲
+embed                                                                               output
+69px                          929px per block                                        35px
+```
+
+Each block column is 929px wide and fills the full 4320px height. The two MLP
+matrices (c_fc and c_proj) dominate each column (~67% of block area), with the
+attention matrices above them. Embeddings and the output head are narrow columns
+on the left and right edges.
 
 ## Hardware
 
