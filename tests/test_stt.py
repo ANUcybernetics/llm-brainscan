@@ -1,7 +1,5 @@
-import queue
 import sys
 import threading
-import time
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -93,19 +91,6 @@ class TestTranscribe:
 
         listener._transcribe([np.zeros(3200, dtype=np.float32)])
         assert listener.get_text() == ["hello world"]
-
-    def test_callback_fired(self, listener):
-        received = []
-        listener._on_transcription = received.append
-
-        mock_segment = MagicMock()
-        mock_segment.text = "test"
-        mock_model = MagicMock()
-        mock_model.transcribe.return_value = ([mock_segment], None)
-        listener._model = mock_model
-
-        listener._transcribe([np.zeros(3200, dtype=np.float32)])
-        assert received == ["test"]
 
 
 class TestStartStop:

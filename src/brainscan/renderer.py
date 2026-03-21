@@ -224,7 +224,7 @@ class _RenderPipeline:
             usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST,
         )
 
-        font_size = max(1024 * 4, 4)
+        font_size = 1024 * 4
         self._font_buffer = device.create_buffer(
             size=font_size,
             usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST,

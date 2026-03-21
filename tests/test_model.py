@@ -2,6 +2,7 @@ import pytest
 import torch
 from conftest import SMALL_CONFIG
 
+from brainscan.data import decode
 from brainscan.layout import LAYOUT_HEIGHT, WIDTH
 from brainscan.model import GPT
 
@@ -9,36 +10,27 @@ from brainscan.model import GPT
 class TestGPTArchitecture:
     def test_creates_with_defaults(self):
         model = GPT()
-        total = model.param_count()["total"]
+        total = sum(p.numel() for p in model.parameters())
         assert total > 0
         assert total <= WIDTH * LAYOUT_HEIGHT
 
     def test_creates_with_small_config(self, small_model):
         assert small_model is not None
 
-    def test_param_count_groups_sum_to_total(self, small_model):
-        groups = small_model.param_count()
-        total = groups.pop("total")
-        assert sum(groups.values()) == total
-
-    def test_param_count_matches_pytorch(self, small_model):
-        groups = small_model.param_count()
-        pytorch_total = sum(p.numel() for p in small_model.parameters())
-        assert groups["total"] == pytorch_total
-
     def test_default_model_fits_layout(self):
         model = GPT()
-        total = model.param_count()["total"]
+        total = sum(p.numel() for p in model.parameters())
         layout_pixels = WIDTH * LAYOUT_HEIGHT
         assert total <= layout_pixels, f"{total} params exceeds layout area {layout_pixels}"
 
-    def test_has_expected_blocks(self, small_model):
-        groups = small_model.param_count()
+    def test_has_expected_layers(self, small_model):
+        param_names = {name for name, _ in small_model.named_parameters()}
         for i in range(SMALL_CONFIG["n_layer"]):
-            assert f"block_{i}/attn" in groups
-            assert f"block_{i}/mlp" in groups
-            assert f"block_{i}/ln_1" in groups
-            assert f"block_{i}/ln_2" in groups
+            prefix = f"blocks.{i}"
+            assert any(n.startswith(f"{prefix}.attn") for n in param_names)
+            assert any(n.startswith(f"{prefix}.mlp") for n in param_names)
+            assert any(n.startswith(f"{prefix}.ln_1") for n in param_names)
+            assert any(n.startswith(f"{prefix}.ln_2") for n in param_names)
 
 
 class TestGPTForward:
@@ -84,7 +76,46 @@ class TestGPTForward:
             assert not torch.all(param.grad == 0), f"Zero gradient for {name}"
 
 
-class TestGPTGeneration:
+class TestGPTGenerate:
+    def test_returns_tokens_and_probs(self, small_model, device):
+        tokens, probs = small_model.generate(b"hello", max_tokens=10)
+        assert len(tokens) == 15  # 5 prompt + 10 generated
+        assert len(probs) == 15
+        assert all(0 <= t < 256 for t in tokens)
+        assert all(0.0 <= p <= 1.0 for p in probs)
+
+    def test_prompt_probs_are_one(self, small_model, device):
+        _, probs = small_model.generate(b"ab", max_tokens=5)
+        assert probs[0] == 1.0
+        assert probs[1] == 1.0
+
+    def test_output_is_decodable(self, small_model, device):
+        tokens, _ = small_model.generate(b"test", max_tokens=20)
+        result = decode(tokens)
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+    def test_restores_training_mode(self, small_model, device):
+        small_model.train()
+        small_model.generate(b"x", max_tokens=5)
+        assert small_model.training
+
+    def test_works_in_eval_mode(self, small_model, device):
+        small_model.eval()
+        tokens, _ = small_model.generate(b"x", max_tokens=5)
+        assert len(tokens) == 6
+        assert not small_model.training
+
+    def test_respects_max_tokens(self, small_model, device):
+        tokens, _ = small_model.generate(b"a", max_tokens=3)
+        assert len(tokens) == 4  # 1 prompt + 3 generated
+
+    def test_infers_device(self, small_model):
+        tokens, _ = small_model.generate(b"x", max_tokens=3)
+        assert len(tokens) == 4
+
+
+class TestGPTGenerationLegacy:
     def test_greedy_generation(self, small_model, device):
         small_model.eval()
         context = torch.randint(0, 256, (1, 4), device=device)

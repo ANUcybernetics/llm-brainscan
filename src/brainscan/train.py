@@ -16,7 +16,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from brainscan.data import TextBuffer, decode, load_text_dataset, prepare_batches
+from brainscan.data import TextBuffer, decode, prepare_batches
 from brainscan.layout import (
     HEIGHT,
     LAYOUT_HEIGHT,
@@ -33,7 +33,7 @@ from brainscan.renderer import (
     OffscreenRenderer,
     flatten_weights,
 )
-from brainscan.snapshot import capture_weight_deltas, capture_weights
+from brainscan.snapshot import capture_weights
 
 log = logging.getLogger(__name__)
 
@@ -62,37 +62,21 @@ def save_frame(canvas: np.ndarray, path: Path) -> None:
     img.save(path)
 
 
-def generate(
-    model: GPT,
-    prompt_bytes: bytes,
-    max_tokens: int,
-    device: torch.device,
-    sequence_len: int,
-) -> tuple[list[int], list[float]]:
-    model.eval()
-    tokens = list(prompt_bytes)
-    probs = [1.0] * len(tokens)
-    context = torch.tensor([tokens], dtype=torch.long, device=device)
-    with torch.no_grad():
-        for _ in range(max_tokens):
-            logits, _ = model(context[:, -sequence_len:])
-            p = torch.softmax(logits[:, -1, :], dim=-1)
-            next_token = torch.multinomial(p, num_samples=1)
-            tok = int(next_token.item())
-            token_prob = p[0, tok].item()
-            tokens.append(tok)
-            probs.append(token_prob)
-            context = torch.cat([context, next_token], dim=1)
-    model.train()
-    return tokens, probs
-
-
-def _flatten_for_display(
+def prepare_display_buffers(
     weights: dict[str, torch.Tensor],
     flat_order: list[str],
-) -> tuple[np.ndarray, int]:
+    canvas_pixels: int,
+    text_chars: list[int] | None = None,
+    text_probs: list[float] | None = None,
+) -> tuple[np.ndarray, np.ndarray | None, np.ndarray | None]:
     np_weights = {k: v.cpu().numpy() for k, v in weights.items()}
-    return flatten_weights(np_weights, layout_order=flat_order)
+    flat, count = flatten_weights(np_weights, layout_order=flat_order)
+    buf = np.zeros(canvas_pixels, dtype=np.float32)
+    n = min(count, canvas_pixels)
+    buf[:n] = flat[:n]
+    chars = np.array(text_chars, dtype=np.uint32) if text_chars else None
+    probs = np.array(text_probs, dtype=np.float32) if text_probs else None
+    return buf, chars, probs
 
 
 def render_frame(
@@ -102,11 +86,10 @@ def render_frame(
     text_chars: list[int] | None = None,
     text_probs: list[float] | None = None,
 ) -> np.ndarray:
-    flat, count = _flatten_for_display(weights, flat_order)
-    buf = np.zeros(WIDTH * HEIGHT, dtype=np.float32)
-    buf[:count] = flat
-    chars = np.array(text_chars, dtype=np.uint32) if text_chars else None
-    probs = np.array(text_probs, dtype=np.float32) if text_probs else None
+    canvas_pixels = renderer.width * renderer.height
+    buf, chars, probs = prepare_display_buffers(
+        weights, flat_order, canvas_pixels, text_chars, text_probs
+    )
     return renderer.render(buf, text_chars=chars, text_probs=probs)
 
 
@@ -203,7 +186,7 @@ def main() -> None:
     data_dir = Path("data")
     data_dir.mkdir(exist_ok=True)
     data_path = Path(args.data) if args.data else download_shakespeare(data_dir)
-    raw_data = load_text_dataset(data_path)
+    raw_data = data_path.read_bytes()
 
     audience_log = output_dir / "audience_input.txt"
     training_data = TextBuffer(raw_data, persist_path=audience_log)
@@ -274,7 +257,6 @@ def main() -> None:
 
     def train_loop() -> None:
         optimiser = torch.optim.AdamW(model.parameters(), lr=args.lr)
-        prev_weights = capture_weights(model)
 
         gen_chars: list[int] = []
         gen_probs: list[float] = []
@@ -293,8 +275,8 @@ def main() -> None:
                     for text in new_texts:
                         log.info("Audience: %s", text)
                         prompt = text.encode("utf-8", errors="replace")
-                        gen_chars, gen_probs = generate(
-                            model, prompt, args.gen_tokens, device, args.sequence_len
+                        gen_chars, gen_probs = model.generate(
+                            prompt, args.gen_tokens, device
                         )
                         generated = decode(gen_chars)
                         log.info("Response: %s", generated[:200])
@@ -310,8 +292,6 @@ def main() -> None:
 
                 if step % args.snapshot_every == 0:
                     current_weights = capture_weights(model)
-                    deltas = capture_weight_deltas(current_weights, prev_weights)
-                    prev_weights = current_weights
 
                     dt = time.time() - t0
                     data_size = len(training_data)
@@ -321,12 +301,10 @@ def main() -> None:
                     )
 
                     if not gen_chars:
-                        gen_chars, gen_probs = generate(
-                            model,
+                        gen_chars, gen_probs = model.generate(
                             b"ROMEO: ",
                             args.gen_tokens,
                             device,
-                            args.sequence_len,
                         )
 
                     if offscreen_renderer is not None:
@@ -340,20 +318,12 @@ def main() -> None:
                         save_frame(canvas, frames_dir / f"frame_{step:06d}.png")
 
                     if live_renderer is not None:
-                        flat, count = _flatten_for_display(
-                            current_weights, flat_order
-                        )
-                        buf = np.zeros(WIDTH * HEIGHT, dtype=np.float32)
-                        buf[:count] = flat
-                        chars = (
-                            np.array(gen_chars, dtype=np.uint32)
-                            if gen_chars
-                            else None
-                        )
-                        probs = (
-                            np.array(gen_probs, dtype=np.float32)
-                            if gen_probs
-                            else None
+                        buf, chars, probs = prepare_display_buffers(
+                            current_weights,
+                            flat_order,
+                            WIDTH * HEIGHT,
+                            gen_chars,
+                            gen_probs,
                         )
                         live_renderer.update(buf, text_chars=chars, text_probs=probs)
 

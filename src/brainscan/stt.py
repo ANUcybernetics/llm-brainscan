@@ -3,7 +3,6 @@
 import logging
 import queue
 import threading
-from collections.abc import Callable
 
 import numpy as np
 
@@ -28,7 +27,6 @@ class SpeechListener:
         min_speech_seconds: float = MIN_SPEECH_SECONDS,
         max_speech_seconds: float = MAX_SPEECH_SECONDS,
         audio_device: int | None = None,
-        on_transcription: Callable[[str], None] | None = None,
     ):
         self._model_size = model_size
         self._whisper_device = device
@@ -39,7 +37,6 @@ class SpeechListener:
         self._min_samples = int(min_speech_seconds * sample_rate)
         self._max_samples = int(max_speech_seconds * sample_rate)
         self._audio_device = audio_device
-        self._on_transcription = on_transcription
 
         self._text_queue: queue.Queue[str] = queue.Queue()
         self._stop_event = threading.Event()
@@ -134,5 +131,3 @@ class SpeechListener:
         if text:
             log.info("Transcribed: %s", text)
             self._text_queue.put(text)
-            if self._on_transcription:
-                self._on_transcription(text)

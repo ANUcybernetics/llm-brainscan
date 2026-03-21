@@ -93,17 +93,29 @@ class GPT(nn.Module):
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
         return logits, loss
 
-    def param_count(self) -> dict[str, int]:
-        groups: dict[str, int] = {}
-        groups["wte"] = self.wte.weight.numel()
-        groups["wpe"] = self.wpe.weight.numel()
-        groups["ln_f"] = sum(p.numel() for p in self.ln_f.parameters())
-        groups["lm_head"] = self.lm_head.weight.numel()
-        for i, block in enumerate(self.blocks):
-            prefix = f"block_{i}"
-            groups[f"{prefix}/ln_1"] = sum(p.numel() for p in block.ln_1.parameters())
-            groups[f"{prefix}/attn"] = sum(p.numel() for p in block.attn.parameters())
-            groups[f"{prefix}/ln_2"] = sum(p.numel() for p in block.ln_2.parameters())
-            groups[f"{prefix}/mlp"] = sum(p.numel() for p in block.mlp.parameters())
-        groups["total"] = sum(p.numel() for p in self.parameters())
-        return groups
+    @torch.no_grad()
+    def generate(
+        self,
+        prompt_bytes: bytes,
+        max_tokens: int,
+        device: torch.device | None = None,
+    ) -> tuple[list[int], list[float]]:
+        if device is None:
+            device = next(self.parameters()).device
+        was_training = self.training
+        self.eval()
+        tokens = list(prompt_bytes)
+        probs = [1.0] * len(tokens)
+        context = torch.tensor([tokens], dtype=torch.long, device=device)
+        for _ in range(max_tokens):
+            logits, _ = self(context[:, -self.sequence_len :])
+            p = torch.softmax(logits[:, -1, :], dim=-1)
+            next_token = torch.multinomial(p, num_samples=1)
+            tok = int(next_token.item())
+            token_prob = p[0, tok].item()
+            tokens.append(tok)
+            probs.append(token_prob)
+            context = torch.cat([context, next_token], dim=1)
+        if was_training:
+            self.train()
+        return tokens, probs

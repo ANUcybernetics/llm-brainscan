@@ -5,14 +5,6 @@ import numpy as np
 import torch
 
 
-def load_text_dataset(path: Path) -> bytes:
-    return path.read_bytes()
-
-
-def encode(text: bytes) -> list[int]:
-    return list(text)
-
-
 def decode(tokens: list[int]) -> str:
     return bytes(tokens).decode("utf-8", errors="replace")
 
