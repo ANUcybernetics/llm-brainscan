@@ -21,7 +21,7 @@ class ActivationCapture:
     def __init__(self, model: GPT):
         self.model = model
         self.activations: dict[str, torch.Tensor] = {}
-        self._hooks: list[torch.utils.hooks.RemovableHook] = []
+        self._hooks: list[torch.utils.hooks.RemovableHandle] = []
 
     def install(self) -> None:
         for name, module in self.model.named_modules():

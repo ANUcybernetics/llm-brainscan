@@ -123,6 +123,7 @@ class SpeechListener:
                     in_speech = False
 
     def _transcribe(self, chunks: list[np.ndarray]) -> None:
+        assert self._model is not None
         audio = np.concatenate(chunks)
         segments, _info = self._model.transcribe(
             audio,

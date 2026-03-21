@@ -175,7 +175,7 @@ class TestChunkSeconds:
         mock_stream.__exit__ = MagicMock(return_value=False)
 
         sd_mock = sys.modules["sounddevice"]
-        sd_mock.InputStream = MagicMock(return_value=mock_stream)
+        sd_mock.InputStream = MagicMock(return_value=mock_stream)  # type: ignore[attr-defined]
 
         listener = SpeechListener(
             model_size="tiny", chunk_seconds=chunk_sec
@@ -224,7 +224,7 @@ class TestAudioLoop:
         mock_stream.__exit__ = MagicMock(return_value=False)
 
         sd_mock = sys.modules["sounddevice"]
-        sd_mock.InputStream = MagicMock(return_value=mock_stream)
+        sd_mock.InputStream = MagicMock(return_value=mock_stream)  # type: ignore[attr-defined]
 
         listener = SpeechListener(model_size="tiny", device="cpu")
 

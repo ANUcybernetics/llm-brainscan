@@ -78,8 +78,9 @@ def generate(
             logits, _ = model(context[:, -sequence_len:])
             p = torch.softmax(logits[:, -1, :], dim=-1)
             next_token = torch.multinomial(p, num_samples=1)
-            token_prob = p[0, next_token.item()].item()
-            tokens.append(next_token.item())
+            tok = int(next_token.item())
+            token_prob = p[0, tok].item()
+            tokens.append(tok)
             probs.append(token_prob)
             context = torch.cat([context, next_token], dim=1)
     model.train()
@@ -307,6 +308,7 @@ def main() -> None:
                     )
 
                 if renderer is not None:
+                    assert flat_order is not None
                     canvas = render_frame(
                         renderer,
                         current_weights,

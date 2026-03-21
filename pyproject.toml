@@ -18,6 +18,7 @@ dev = [
     "pytest",
     "pytest-xdist",
     "ruff>=0.15.7",
+    "ty",
 ]
 
 [build-system]
