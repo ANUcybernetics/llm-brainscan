@@ -103,4 +103,4 @@ on the left and right edges.
 
 ## Licence
 
-Not yet decided.
+MIT --- see [LICENCE](LICENCE). Copyright (c) 2026 Ben Swift.
