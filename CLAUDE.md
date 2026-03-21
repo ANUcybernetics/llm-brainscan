@@ -11,6 +11,7 @@ of the display is a text strip showing inference output.
 - Python 3.12, managed with uv via mise
 - PyTorch for model training and inference
 - wgpu (WebGPU via wgpu-native/Vulkan) for GPU-side rendering and colourmaps
+- rendercanvas (GLFW backend) for live fullscreen window display
 - All commands: `mise exec -- uv run ...`
 - Tests: `mise exec -- uv run pytest tests/ -v`
 - Type checking: `mise exec -- uv run ty check`
@@ -63,14 +64,17 @@ order for the renderer's storage buffer.
 ## Rendering pipeline
 
 1. Capture weights as a dict of tensors (`snapshot.py`)
-2. Flatten in layout order and normalise to [-1, 1] (`renderer.py`)
-3. Upload weights, font atlas, and text data to wgpu storage buffers
-4. Fragment shader applies colourmap per pixel (top) and renders bitmap
-   font text coloured by probability (bottom strip)
-5. Read back as RGBA numpy array or display on canvas
+2. Flatten in layout order (`renderer.py:flatten_weights`)
+3. Upload raw weights, font atlas, and text data to wgpu storage buffers
+4. Fragment shader normalises by vmax uniform, applies colourmap per pixel
+   (top) and renders bitmap font text coloured by probability (bottom strip)
+5. Read back as RGBA numpy array (offscreen) or present to display (live)
 
-The renderer works headless (offscreen) via Vulkan --- no window or display
-server required.
+Two renderer classes share a `_RenderPipeline`:
+- `OffscreenRenderer`: headless via Vulkan, returns numpy array (no display needed)
+- `LiveRenderer`: fullscreen window via rendercanvas/GLFW, training runs in
+  background thread, `update()` pushes data thread-safely, `--live` flag in
+  `train.py`
 
 ## Conventions
 

@@ -29,6 +29,7 @@ from brainscan.layout import (
 )
 from brainscan.model import GPT
 from brainscan.renderer import (
+    LiveRenderer,
     OffscreenRenderer,
     flatten_weights,
 )
@@ -86,6 +87,14 @@ def generate(
     return tokens, probs
 
 
+def _flatten_for_display(
+    weights: dict[str, torch.Tensor],
+    flat_order: list[str],
+) -> tuple[np.ndarray, int]:
+    np_weights = {k: v.cpu().numpy() for k, v in weights.items()}
+    return flatten_weights(np_weights, layout_order=flat_order)
+
+
 def render_frame(
     renderer: OffscreenRenderer,
     weights: dict[str, torch.Tensor],
@@ -93,8 +102,7 @@ def render_frame(
     text_chars: list[int] | None = None,
     text_probs: list[float] | None = None,
 ) -> np.ndarray:
-    np_weights = {k: v.cpu().numpy() for k, v in weights.items()}
-    flat, count = flatten_weights(np_weights, layout_order=flat_order)
+    flat, count = _flatten_for_display(weights, flat_order)
     buf = np.zeros(WIDTH * HEIGHT, dtype=np.float32)
     buf[:count] = flat
     chars = np.array(text_chars, dtype=np.uint32) if text_chars else None
@@ -125,6 +133,11 @@ def main() -> None:
         "--save-images",
         action="store_true",
         help="Save weight visualisation frames as PNGs",
+    )
+    parser.add_argument(
+        "--live",
+        action="store_true",
+        help="Display weights live in a fullscreen window",
     )
     parser.add_argument(
         "--no-mic",
@@ -225,14 +238,24 @@ def main() -> None:
     )
     print(f"\nLayout saved to {layout_path}")
 
-    renderer = None
-    flat_order = None
+    flat_order = layout_to_flat_order(layout)
+
+    offscreen_renderer = None
     if args.save_images:
-        renderer = OffscreenRenderer(
+        offscreen_renderer = OffscreenRenderer(
             WIDTH, HEIGHT, text_strip_height=TEXT_STRIP_HEIGHT
         )
-        flat_order = layout_to_flat_order(layout)
-        print(f"Renderer initialised ({WIDTH}x{HEIGHT})")
+        print(f"Offscreen renderer initialised ({WIDTH}x{HEIGHT})")
+
+    live_renderer = None
+    if args.live:
+        live_renderer = LiveRenderer(
+            WIDTH,
+            HEIGHT,
+            text_strip_height=TEXT_STRIP_HEIGHT,
+            fullscreen=True,
+        )
+        print(f"Live renderer initialised ({WIDTH}x{HEIGHT})")
 
     listener = None
     if not args.no_mic:
@@ -249,88 +272,118 @@ def main() -> None:
         listener.start()
         print("Microphone listener started")
 
-    optimiser = torch.optim.AdamW(model.parameters(), lr=args.lr)
-    prev_weights = capture_weights(model)
+    def train_loop() -> None:
+        optimiser = torch.optim.AdamW(model.parameters(), lr=args.lr)
+        prev_weights = capture_weights(model)
 
-    gen_chars: list[int] = []
-    gen_probs: list[float] = []
+        gen_chars: list[int] = []
+        gen_probs: list[float] = []
 
-    print("\nTraining started (Ctrl+C to stop)...")
-    t0 = time.time()
-    step = 0
+        print("\nTraining started (Ctrl+C to stop)...")
+        t0 = time.time()
+        step = 0
 
-    try:
-        while True:
-            if args.steps > 0 and step >= args.steps:
-                break
+        try:
+            while True:
+                if args.steps > 0 and step >= args.steps:
+                    break
 
-            if listener is not None:
-                new_texts = listener.get_text()
-                for text in new_texts:
-                    log.info("Audience: %s", text)
-                    prompt = text.encode("utf-8", errors="replace")
-                    gen_chars, gen_probs = generate(
-                        model, prompt, args.gen_tokens, device, args.sequence_len
-                    )
-                    generated = decode(gen_chars)
-                    log.info("Response: %s", generated[:200])
-                    training_data.append(text)
+                if listener is not None:
+                    new_texts = listener.get_text()
+                    for text in new_texts:
+                        log.info("Audience: %s", text)
+                        prompt = text.encode("utf-8", errors="replace")
+                        gen_chars, gen_probs = generate(
+                            model, prompt, args.gen_tokens, device, args.sequence_len
+                        )
+                        generated = decode(gen_chars)
+                        log.info("Response: %s", generated[:200])
+                        training_data.append(text)
 
-            x, y = prepare_batches(
-                training_data, args.batch_size, args.sequence_len, device
-            )
-            _, loss = model(x, y)
-            optimiser.zero_grad()
-            loss.backward()
-            optimiser.step()
-
-            if step % args.snapshot_every == 0:
-                current_weights = capture_weights(model)
-                deltas = capture_weight_deltas(current_weights, prev_weights)
-                prev_weights = current_weights
-
-                dt = time.time() - t0
-                data_size = len(training_data)
-                print(
-                    f"step {step:5d} | loss {loss.item():.4f}"
-                    f" | data {data_size:,}B | {dt:.1f}s"
+                x, y = prepare_batches(
+                    training_data, args.batch_size, args.sequence_len, device
                 )
+                _, loss = model(x, y)
+                optimiser.zero_grad()
+                loss.backward()
+                optimiser.step()
 
-                if not gen_chars:
-                    gen_chars, gen_probs = generate(
-                        model,
-                        b"ROMEO: ",
-                        args.gen_tokens,
-                        device,
-                        args.sequence_len,
+                if step % args.snapshot_every == 0:
+                    current_weights = capture_weights(model)
+                    deltas = capture_weight_deltas(current_weights, prev_weights)
+                    prev_weights = current_weights
+
+                    dt = time.time() - t0
+                    data_size = len(training_data)
+                    print(
+                        f"step {step:5d} | loss {loss.item():.4f}"
+                        f" | data {data_size:,}B | {dt:.1f}s"
                     )
 
-                if renderer is not None:
-                    assert flat_order is not None
-                    canvas = render_frame(
-                        renderer,
-                        current_weights,
-                        flat_order,
-                        gen_chars,
-                        gen_probs,
-                    )
-                    save_frame(canvas, frames_dir / f"frame_{step:06d}.png")
+                    if not gen_chars:
+                        gen_chars, gen_probs = generate(
+                            model,
+                            b"ROMEO: ",
+                            args.gen_tokens,
+                            device,
+                            args.sequence_len,
+                        )
 
-            step += 1
+                    if offscreen_renderer is not None:
+                        canvas = render_frame(
+                            offscreen_renderer,
+                            current_weights,
+                            flat_order,
+                            gen_chars,
+                            gen_probs,
+                        )
+                        save_frame(canvas, frames_dir / f"frame_{step:06d}.png")
 
-    except KeyboardInterrupt:
-        print("\nStopping...")
+                    if live_renderer is not None:
+                        flat, count = _flatten_for_display(
+                            current_weights, flat_order
+                        )
+                        buf = np.zeros(WIDTH * HEIGHT, dtype=np.float32)
+                        buf[:count] = flat
+                        chars = (
+                            np.array(gen_chars, dtype=np.uint32)
+                            if gen_chars
+                            else None
+                        )
+                        probs = (
+                            np.array(gen_probs, dtype=np.float32)
+                            if gen_probs
+                            else None
+                        )
+                        live_renderer.update(buf, text_chars=chars, text_probs=probs)
 
-    if listener is not None:
-        listener.stop()
-        print("Microphone listener stopped")
+                step += 1
 
-    total_time = time.time() - t0
-    if step > 0:
-        print(
-            f"Done. {step} steps in {total_time:.1f}s"
-            f" ({step / total_time:.1f} steps/s)"
-        )
+        except KeyboardInterrupt:
+            print("\nStopping...")
+
+        if listener is not None:
+            listener.stop()
+            print("Microphone listener stopped")
+
+        if live_renderer is not None:
+            live_renderer.close()
+
+        total_time = time.time() - t0
+        if step > 0:
+            print(
+                f"Done. {step} steps in {total_time:.1f}s"
+                f" ({step / total_time:.1f} steps/s)"
+            )
+
+    if live_renderer is not None:
+        import threading
+
+        train_thread = threading.Thread(target=train_loop, daemon=True)
+        train_thread.start()
+        live_renderer.run()
+    else:
+        train_loop()
 
 
 if __name__ == "__main__":

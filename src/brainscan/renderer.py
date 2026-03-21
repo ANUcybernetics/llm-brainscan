@@ -7,12 +7,14 @@ the final image. All colourmap computation happens on the GPU.
 The bottom strip of the canvas can display generated text using a bitmap font,
 with each character coloured by its softmax probability.
 
-Can operate in two modes:
-- offscreen: render to a texture, read back as numpy array
-- windowed: render to a canvas via rendercanvas (for live display)
+Two renderer classes are provided:
+- OffscreenRenderer: render to a texture, read back as numpy array
+- LiveRenderer: render directly to a fullscreen window via rendercanvas
 """
 
 from __future__ import annotations
+
+import threading
 
 import numpy as np
 import wgpu
@@ -143,6 +145,18 @@ COLORMAP_THERMAL = 1
 
 TEXT_SCALE_DEFAULT = 3
 
+_UNIFORM_DTYPE = np.dtype([
+    ("width", np.uint32),
+    ("height", np.uint32),
+    ("param_count", np.uint32),
+    ("colormap", np.uint32),
+    ("text_y", np.uint32),
+    ("text_scale", np.uint32),
+    ("text_cols", np.uint32),
+    ("text_count", np.uint32),
+    ("vmax", np.float32),
+])
+
 
 def get_device() -> wgpu.GPUDevice:
     adapter = wgpu.gpu.request_adapter_sync(power_preference="high-performance")
@@ -162,6 +176,184 @@ def flatten_weights(
     parts = [weights[name].ravel() for name in layout_order if name in weights]
     flat = np.concatenate(parts).astype(np.float32)
     return flat, len(flat)
+
+
+class _RenderPipeline:
+    """Shared GPU pipeline for weight visualisation.
+
+    Holds buffers, bind group, and pipeline. Both OffscreenRenderer and
+    LiveRenderer delegate to this for setup and draw submission.
+    """
+
+    def __init__(
+        self,
+        device: wgpu.GPUDevice,
+        width: int,
+        height: int,
+        colormap: int,
+        text_strip_height: int,
+        text_scale: int,
+        target_format: str,
+    ):
+        self.device = device
+        self.width = width
+        self.height = height
+        self.colormap = colormap
+        self.text_strip_height = text_strip_height
+        self.text_scale = text_scale
+        self.text_y = height - text_strip_height if text_strip_height > 0 else 0
+        self.text_cols = width // (8 * text_scale) if text_strip_height > 0 else 0
+
+        self._uniform_data = np.zeros(1, dtype=_UNIFORM_DTYPE)
+        self._uniform_data["width"] = width
+        self._uniform_data["height"] = height
+        self._uniform_data["colormap"] = colormap
+        self._uniform_data["text_y"] = self.text_y
+        self._uniform_data["text_scale"] = text_scale
+        self._uniform_data["text_cols"] = self.text_cols
+
+        uniform_size = max(_UNIFORM_DTYPE.itemsize, 36)
+        self._uniform_buffer = device.create_buffer(
+            size=uniform_size,
+            usage=wgpu.BufferUsage.UNIFORM | wgpu.BufferUsage.COPY_DST,
+        )
+
+        max_params = width * height
+        self._weight_buffer = device.create_buffer(
+            size=max_params * 4,
+            usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST,
+        )
+
+        font_size = max(1024 * 4, 4)
+        self._font_buffer = device.create_buffer(
+            size=font_size,
+            usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST,
+        )
+
+        self.max_text = max(
+            self.text_cols * (text_strip_height // (16 * text_scale)), 1
+        )
+        self._text_chars_buffer = device.create_buffer(
+            size=self.max_text * 4,
+            usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST,
+        )
+        self._text_probs_buffer = device.create_buffer(
+            size=self.max_text * 4,
+            usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST,
+        )
+
+        if text_strip_height > 0:
+            from brainscan.font import generate_font_atlas
+
+            font_data = generate_font_atlas()
+            device.queue.write_buffer(self._font_buffer, 0, font_data.tobytes())
+
+        bind_group_layout = device.create_bind_group_layout(
+            entries=[
+                {
+                    "binding": i,
+                    "visibility": wgpu.ShaderStage.FRAGMENT,
+                    "buffer": {
+                        "type": wgpu.BufferBindingType.uniform
+                        if i == 0
+                        else wgpu.BufferBindingType.read_only_storage
+                    },
+                }
+                for i in range(5)
+            ]
+        )
+
+        buffers = [
+            self._uniform_buffer,
+            self._weight_buffer,
+            self._font_buffer,
+            self._text_chars_buffer,
+            self._text_probs_buffer,
+        ]
+        self._bind_group = device.create_bind_group(
+            layout=bind_group_layout,
+            entries=[
+                {
+                    "binding": i,
+                    "resource": {
+                        "buffer": buf,
+                        "offset": 0,
+                        "size": buf.size,
+                    },
+                }
+                for i, buf in enumerate(buffers)
+            ],
+        )
+
+        pipeline_layout = device.create_pipeline_layout(
+            bind_group_layouts=[bind_group_layout]
+        )
+        shader = device.create_shader_module(code=SHADER_SOURCE)
+        self._pipeline = device.create_render_pipeline(
+            layout=pipeline_layout,
+            vertex={"module": shader, "entry_point": "vs_main"},
+            fragment={
+                "module": shader,
+                "entry_point": "fs_main",
+                "targets": [{"format": target_format}],
+            },
+            primitive={"topology": wgpu.PrimitiveTopology.triangle_list},
+        )
+
+    def draw(
+        self,
+        target_view: wgpu.GPUTextureView,
+        flat_weights: np.ndarray,
+        text_chars: np.ndarray | None = None,
+        text_probs: np.ndarray | None = None,
+    ) -> None:
+        device = self.device
+        param_count = len(flat_weights)
+
+        text_count = 0
+        if text_chars is not None and text_probs is not None:
+            text_count = min(len(text_chars), self.max_text)
+            device.queue.write_buffer(
+                self._text_chars_buffer,
+                0,
+                text_chars[:text_count].astype(np.uint32).tobytes(),
+            )
+            device.queue.write_buffer(
+                self._text_probs_buffer,
+                0,
+                text_probs[:text_count].astype(np.float32).tobytes(),
+            )
+
+        vmax = float(np.max(np.abs(flat_weights))) if param_count > 0 else 0.0
+        self._uniform_data["param_count"] = param_count
+        self._uniform_data["colormap"] = self.colormap
+        self._uniform_data["text_count"] = text_count
+        self._uniform_data["vmax"] = vmax
+        device.queue.write_buffer(
+            self._uniform_buffer, 0, self._uniform_data.tobytes()
+        )
+
+        device.queue.write_buffer(
+            self._weight_buffer, 0, flat_weights.astype(np.float32).tobytes()
+        )
+
+        command_encoder = device.create_command_encoder()
+        render_pass = command_encoder.begin_render_pass(
+            color_attachments=[
+                {
+                    "view": target_view,
+                    "resolve_target": None,
+                    "clear_value": (0.05, 0.05, 0.05, 1.0),
+                    "load_op": "clear",
+                    "store_op": "store",
+                }
+            ]
+        )
+        render_pass.set_pipeline(self._pipeline)
+        render_pass.set_bind_group(0, self._bind_group)
+        render_pass.draw(3, 1, 0, 0)
+        render_pass.end()
+        device.queue.submit([command_encoder.finish()])
 
 
 class OffscreenRenderer:
@@ -185,166 +377,23 @@ class OffscreenRenderer:
         self.colormap = colormap
         self.text_strip_height = text_strip_height
         self.text_scale = text_scale
-        self.text_y = height - text_strip_height if text_strip_height > 0 else 0
-        self.text_cols = width // (8 * text_scale) if text_strip_height > 0 else 0
         self.device = device or get_device()
-        self._setup_pipeline()
 
-    def _setup_pipeline(self) -> None:
-        device = self.device
-
-        self._shader = device.create_shader_module(code=SHADER_SOURCE)
-
-        uniform_dtype = np.dtype([
-            ("width", np.uint32),
-            ("height", np.uint32),
-            ("param_count", np.uint32),
-            ("colormap", np.uint32),
-            ("text_y", np.uint32),
-            ("text_scale", np.uint32),
-            ("text_cols", np.uint32),
-            ("text_count", np.uint32),
-            ("vmax", np.float32),
-        ])
-        self._uniform_data = np.zeros(1, dtype=uniform_dtype)
-        self._uniform_data["width"] = self.width
-        self._uniform_data["height"] = self.height
-        self._uniform_data["colormap"] = self.colormap
-        self._uniform_data["text_y"] = self.text_y
-        self._uniform_data["text_scale"] = self.text_scale
-        self._uniform_data["text_cols"] = self.text_cols
-        # Round up to 4-byte alignment (already aligned at 36 bytes, but be safe)
-        uniform_size = max(uniform_dtype.itemsize, 36)
-        self._uniform_buffer = device.create_buffer(
-            size=uniform_size,
-            usage=wgpu.BufferUsage.UNIFORM | wgpu.BufferUsage.COPY_DST,
+        self._pipe = _RenderPipeline(
+            self.device,
+            width,
+            height,
+            colormap,
+            text_strip_height,
+            text_scale,
+            wgpu.TextureFormat.rgba8unorm,
         )
+        self.text_y = self._pipe.text_y
+        self.text_cols = self._pipe.text_cols
 
-        max_params = self.width * self.height
-        self._weight_buffer = device.create_buffer(
-            size=max_params * 4,
-            usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST,
-        )
-
-        font_size = max(1024 * 4, 4)
-        self._font_buffer = device.create_buffer(
-            size=font_size,
-            usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST,
-        )
-
-        max_text = max(self.text_cols * (self.text_strip_height // (16 * self.text_scale)), 1)
-        self._text_chars_buffer = device.create_buffer(
-            size=max_text * 4,
-            usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST,
-        )
-        self._text_probs_buffer = device.create_buffer(
-            size=max_text * 4,
-            usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST,
-        )
-        self._max_text = max_text
-
-        if self.text_strip_height > 0:
-            from brainscan.font import generate_font_atlas
-
-            font_data = generate_font_atlas()
-            device.queue.write_buffer(self._font_buffer, 0, font_data.tobytes())
-
-        bind_group_layout = device.create_bind_group_layout(
-            entries=[
-                {
-                    "binding": 0,
-                    "visibility": wgpu.ShaderStage.FRAGMENT,
-                    "buffer": {"type": wgpu.BufferBindingType.uniform},
-                },
-                {
-                    "binding": 1,
-                    "visibility": wgpu.ShaderStage.FRAGMENT,
-                    "buffer": {"type": wgpu.BufferBindingType.read_only_storage},
-                },
-                {
-                    "binding": 2,
-                    "visibility": wgpu.ShaderStage.FRAGMENT,
-                    "buffer": {"type": wgpu.BufferBindingType.read_only_storage},
-                },
-                {
-                    "binding": 3,
-                    "visibility": wgpu.ShaderStage.FRAGMENT,
-                    "buffer": {"type": wgpu.BufferBindingType.read_only_storage},
-                },
-                {
-                    "binding": 4,
-                    "visibility": wgpu.ShaderStage.FRAGMENT,
-                    "buffer": {"type": wgpu.BufferBindingType.read_only_storage},
-                },
-            ]
-        )
-
-        self._bind_group = device.create_bind_group(
-            layout=bind_group_layout,
-            entries=[
-                {
-                    "binding": 0,
-                    "resource": {
-                        "buffer": self._uniform_buffer,
-                        "offset": 0,
-                        "size": self._uniform_buffer.size,
-                    },
-                },
-                {
-                    "binding": 1,
-                    "resource": {
-                        "buffer": self._weight_buffer,
-                        "offset": 0,
-                        "size": self._weight_buffer.size,
-                    },
-                },
-                {
-                    "binding": 2,
-                    "resource": {
-                        "buffer": self._font_buffer,
-                        "offset": 0,
-                        "size": self._font_buffer.size,
-                    },
-                },
-                {
-                    "binding": 3,
-                    "resource": {
-                        "buffer": self._text_chars_buffer,
-                        "offset": 0,
-                        "size": self._text_chars_buffer.size,
-                    },
-                },
-                {
-                    "binding": 4,
-                    "resource": {
-                        "buffer": self._text_probs_buffer,
-                        "offset": 0,
-                        "size": self._text_probs_buffer.size,
-                    },
-                },
-            ],
-        )
-
-        pipeline_layout = device.create_pipeline_layout(
-            bind_group_layouts=[bind_group_layout]
-        )
-
-        self._render_texture_format = wgpu.TextureFormat.rgba8unorm
-
-        self._pipeline = device.create_render_pipeline(
-            layout=pipeline_layout,
-            vertex={"module": self._shader, "entry_point": "vs_main"},
-            fragment={
-                "module": self._shader,
-                "entry_point": "fs_main",
-                "targets": [{"format": self._render_texture_format}],
-            },
-            primitive={"topology": wgpu.PrimitiveTopology.triangle_list},
-        )
-
-        self._target_texture = device.create_texture(
-            size=(self.width, self.height, 1),
-            format=self._render_texture_format,
+        self._target_texture = self.device.create_texture(
+            size=(width, height, 1),
+            format=wgpu.TextureFormat.rgba8unorm,
             usage=wgpu.TextureUsage.RENDER_ATTACHMENT | wgpu.TextureUsage.COPY_SRC,
         )
 
@@ -367,48 +416,140 @@ class OffscreenRenderer:
         Returns:
             RGBA uint8 numpy array of shape (height, width, 4).
         """
-        device = self.device
-        param_count = len(flat_weights)
+        target_view = self._target_texture.create_view()
+        self._pipe.draw(target_view, flat_weights, text_chars, text_probs)
 
-        text_count = 0
-        if text_chars is not None and text_probs is not None:
-            text_count = min(len(text_chars), self._max_text)
-            chars = text_chars[:text_count].astype(np.uint32)
-            probs = text_probs[:text_count].astype(np.float32)
-            device.queue.write_buffer(self._text_chars_buffer, 0, chars.tobytes())
-            device.queue.write_buffer(self._text_probs_buffer, 0, probs.tobytes())
-
-        vmax = float(np.max(np.abs(flat_weights))) if param_count > 0 else 0.0
-        self._uniform_data["param_count"] = param_count
-        self._uniform_data["colormap"] = self.colormap
-        self._uniform_data["text_count"] = text_count
-        self._uniform_data["vmax"] = vmax
-        device.queue.write_buffer(self._uniform_buffer, 0, self._uniform_data.tobytes())
-
-        weight_bytes = flat_weights.astype(np.float32).tobytes()
-        device.queue.write_buffer(self._weight_buffer, 0, weight_bytes)
-
-        command_encoder = device.create_command_encoder()
-        render_pass = command_encoder.begin_render_pass(
-            color_attachments=[
-                {
-                    "view": self._target_texture.create_view(),
-                    "resolve_target": None,
-                    "clear_value": (0.05, 0.05, 0.05, 1.0),
-                    "load_op": "clear",
-                    "store_op": "store",
-                }
-            ]
-        )
-        render_pass.set_pipeline(self._pipeline)
-        render_pass.set_bind_group(0, self._bind_group)
-        render_pass.draw(3, 1, 0, 0)
-        render_pass.end()
-        device.queue.submit([command_encoder.finish()])
-
-        data = device.queue.read_texture(
+        data = self.device.queue.read_texture(
             {"texture": self._target_texture, "mip_level": 0, "origin": (0, 0, 0)},
             {"bytes_per_row": self.width * 4},
             (self.width, self.height, 1),
         )
-        return np.frombuffer(data, dtype=np.uint8).reshape(self.height, self.width, 4)
+        return np.frombuffer(data, dtype=np.uint8).reshape(
+            self.height, self.width, 4
+        )
+
+
+class LiveRenderer:
+    """Render weight data directly to a fullscreen window.
+
+    The training loop runs in a background thread and calls ``update()`` to
+    push new weight data. The canvas event loop runs on the main thread via
+    ``run()``. Rendering goes straight to the display surface --- no GPU
+    readback.
+    """
+
+    def __init__(
+        self,
+        width: int,
+        height: int,
+        *,
+        device: wgpu.GPUDevice | None = None,
+        colormap: int = COLORMAP_DIVERGING,
+        text_strip_height: int = 0,
+        text_scale: int = TEXT_SCALE_DEFAULT,
+        fullscreen: bool = True,
+        max_fps: int = 30,
+        canvas: object | None = None,
+    ):
+        self.width = width
+        self.height = height
+        self.device = device or get_device()
+
+        if canvas is None:
+            from rendercanvas.glfw import RenderCanvas
+
+            canvas = RenderCanvas(
+                size=(width, height),
+                title="LLM Brainscan",
+                update_mode="continuous",
+                max_fps=max_fps,
+            )
+        self._canvas = canvas
+
+        self._context = self._canvas.get_wgpu_context()  # type: ignore[union-attr]
+        self._context.configure(
+            device=self.device, format=wgpu.TextureFormat.rgba8unorm
+        )
+
+        self._pipe = _RenderPipeline(
+            self.device,
+            width,
+            height,
+            colormap,
+            text_strip_height,
+            text_scale,
+            wgpu.TextureFormat.rgba8unorm,
+        )
+        self.text_y = self._pipe.text_y
+        self.text_cols = self._pipe.text_cols
+
+        self._lock = threading.Lock()
+        self._flat_weights: np.ndarray | None = None
+        self._text_chars: np.ndarray | None = None
+        self._text_probs: np.ndarray | None = None
+
+        if fullscreen:
+            self._go_fullscreen()
+
+        self._canvas.request_draw(self._draw)  # type: ignore[union-attr]
+
+    def update(
+        self,
+        flat_weights: np.ndarray,
+        text_chars: np.ndarray | None = None,
+        text_probs: np.ndarray | None = None,
+    ) -> None:
+        """Thread-safe update of weight and text data for the next frame."""
+        with self._lock:
+            self._flat_weights = flat_weights.astype(np.float32, copy=True)
+            self._text_chars = (
+                text_chars.astype(np.uint32, copy=True)
+                if text_chars is not None
+                else None
+            )
+            self._text_probs = (
+                text_probs.astype(np.float32, copy=True)
+                if text_probs is not None
+                else None
+            )
+
+    def _draw(self) -> None:
+        with self._lock:
+            weights = self._flat_weights
+            chars = self._text_chars
+            probs = self._text_probs
+
+        if weights is None:
+            return
+
+        texture = self._context.get_current_texture()
+        self._pipe.draw(texture.create_view(), weights, chars, probs)
+
+    def _go_fullscreen(self) -> None:
+        try:
+            import glfw  # type: ignore[import]
+
+            window = self._canvas._window  # type: ignore[union-attr]
+            if window is None:
+                return
+            monitor = glfw.get_primary_monitor()
+            mode = glfw.get_video_mode(monitor)
+            glfw.set_window_monitor(
+                window,
+                monitor,
+                0,
+                0,
+                mode.size.width,
+                mode.size.height,
+                mode.refresh_rate,
+            )
+        except (ImportError, AttributeError):
+            pass
+
+    def run(self) -> None:
+        """Enter the canvas event loop (blocks until the window is closed)."""
+        group = self._canvas._rc_canvas_group  # type: ignore[union-attr]
+        group.get_loop().run()
+
+    def close(self) -> None:
+        self._canvas.close()  # type: ignore[union-attr]

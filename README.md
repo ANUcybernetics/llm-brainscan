@@ -35,11 +35,19 @@ uv run pytest
 ## Training
 
 ```sh
+# Save weight visualisation frames as PNGs
 mise exec -- uv run python -m brainscan.train --steps 1000 --save-images
+
+# Live fullscreen display (renders directly to the screen, no readback)
+mise exec -- uv run python -m brainscan.train --live
+
+# Both at once
+mise exec -- uv run python -m brainscan.train --live --save-images
 ```
 
-This downloads Tiny Shakespeare on first run, trains the model, and optionally
-saves weight visualisation frames to `output/frames/`.
+This downloads Tiny Shakespeare on first run and trains the model. `--live`
+opens a fullscreen window showing weight matrices in real time (one pixel per
+parameter). `--save-images` writes frames to `output/frames/`.
 
 ## Architecture
 
@@ -53,8 +61,8 @@ src/brainscan/
 ├── snapshot.py   # weight capture, deltas, activation hooks
 ├── layout.py     # 8K canvas layout engine
 ├── font.py       # bitmap font atlas for GPU text rendering
-├── renderer.py   # wgpu offscreen/windowed renderer
-└── train.py      # training with snapshot integration
+├── renderer.py   # wgpu offscreen + live fullscreen renderer
+└── train.py      # training with snapshot and live display integration
 ```
 
 ## Display layout
@@ -96,8 +104,13 @@ at 3× scale, with brightness indicating token confidence.
 
 ## Hardware
 
-- **dev**: any machine with a CUDA GPU
-- **target**: NVIDIA Jetson Orin 64GB (disable torch.compile for ARM64)
+- **dev**: any machine with a CUDA GPU and a Vulkan-capable display
+- **target**: NVIDIA Jetson Orin 64GB connected to an 8K display (1:1 pixel
+  mapping, disable torch.compile for ARM64)
+
+The `--live` mode uses rendercanvas with GLFW for fullscreen presentation. On
+the Jetson's shared memory architecture, the fragment shader normalises weights
+on the GPU (no CPU-side normalisation pass), minimising memory copies.
 
 ## Licence
 

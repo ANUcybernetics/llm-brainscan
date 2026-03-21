@@ -1,10 +1,14 @@
+import threading
+
 import numpy as np
 import pytest
 
 from brainscan.renderer import (
     COLORMAP_THERMAL,
+    LiveRenderer,
     OffscreenRenderer,
     flatten_weights,
+    get_device,
 )
 
 
@@ -189,3 +193,94 @@ class TestTextStripRenderer:
         hi_brightness = img_hi[32:48, :, :3].astype(float).sum()
         lo_brightness = img_lo[32:48, :, :3].astype(float).sum()
         assert hi_brightness > lo_brightness, "High probability text should be brighter"
+
+
+def _make_offscreen_canvas(width, height):
+    from rendercanvas.offscreen import RenderCanvas
+
+    return RenderCanvas(size=(width, height))
+
+
+class TestLiveRenderer:
+    @pytest.fixture
+    def live_renderer(self):
+        device = get_device()
+        renderer = LiveRenderer(
+            32,
+            32,
+            device=device,
+            fullscreen=False,
+            canvas=_make_offscreen_canvas(32, 32),
+        )
+        yield renderer
+        renderer.close()
+
+    def test_initial_state_has_no_data(self, live_renderer):
+        assert live_renderer._flat_weights is None
+
+    def test_update_stores_data(self, live_renderer):
+        weights = np.ones(32 * 32, dtype=np.float32)
+        live_renderer.update(weights)
+        assert live_renderer._flat_weights is not None
+        np.testing.assert_array_equal(live_renderer._flat_weights, weights)
+
+    def test_update_copies_data(self, live_renderer):
+        weights = np.ones(32 * 32, dtype=np.float32)
+        live_renderer.update(weights)
+        weights[:] = 99.0
+        assert live_renderer._flat_weights[0] == 1.0
+
+    def test_update_with_text(self, live_renderer):
+        weights = np.zeros(32 * 32, dtype=np.float32)
+        chars = np.array([65, 66, 67], dtype=np.uint32)
+        probs = np.array([1.0, 0.5, 0.1], dtype=np.float32)
+        live_renderer.update(weights, text_chars=chars, text_probs=probs)
+        np.testing.assert_array_equal(live_renderer._text_chars, chars)
+        np.testing.assert_array_equal(live_renderer._text_probs, probs)
+
+    def test_draw_renders_after_update(self, live_renderer):
+        weights = np.ones(32 * 32, dtype=np.float32)
+        live_renderer.update(weights)
+        live_renderer._canvas.force_draw()
+
+    def test_draw_skips_without_data(self, live_renderer):
+        live_renderer._canvas.force_draw()
+
+    def test_thread_safe_updates(self, live_renderer):
+        errors = []
+
+        def writer():
+            try:
+                for i in range(50):
+                    data = np.full(32 * 32, float(i), dtype=np.float32)
+                    live_renderer.update(data)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=writer) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert not errors, f"Thread errors: {errors}"
+        assert live_renderer._flat_weights is not None
+
+    def test_produces_same_output_as_offscreen(self):
+        device = get_device()
+        weights = np.random.randn(32 * 32).astype(np.float32)
+
+        offscreen = OffscreenRenderer(32, 32, device=device)
+        img_offscreen = offscreen.render(weights)
+
+        canvas = _make_offscreen_canvas(32, 32)
+        live = LiveRenderer(
+            32, 32, device=device, fullscreen=False, canvas=canvas
+        )
+        live.update(weights)
+        canvas.force_draw()
+        img_live = canvas._last_image
+
+        assert img_live is not None, "LiveRenderer should have produced output"
+        assert img_live.shape == img_offscreen.shape
+        np.testing.assert_array_equal(img_live, img_offscreen)
+        live.close()
