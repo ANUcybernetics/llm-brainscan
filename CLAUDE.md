@@ -22,11 +22,11 @@ of the display is a text strip showing inference output.
 src/brainscan/
 ├── model.py      # GPT model (vanilla transformer, char-level, vocab=256) + generate()
 ├── data.py       # decode(), TextBuffer, prepare_batches
-├── stt.py        # speech-to-text input via faster-whisper + sounddevice
+├── stt.py        # SpeechConfig, is_speech(), transcribe(), SpeechListener
 ├── snapshot.py   # capture_weights() --- detached clone of all model params
 ├── layout.py     # maps param tensors to 8K canvas (left-to-right sections)
 ├── font.py       # bitmap font atlas (8x16 glyphs) for GPU text rendering
-├── renderer.py   # wgpu offscreen/windowed renderer with WGSL shaders
+├── renderer.py   # RenderConfig, RenderResources, create_render_pipeline(), draw()
 └── train.py      # training loop, prepare_display_buffers(), render_frame()
 tests/
 ├── conftest.py        # shared fixtures (SMALL_CONFIG, device, small_model)
@@ -72,11 +72,25 @@ order for the renderer's storage buffer.
    (top) and renders bitmap font text coloured by probability (bottom strip)
 5. Read back as RGBA numpy array (offscreen) or present to display (live)
 
-Two renderer classes share a `_RenderPipeline`:
+GPU resources are managed via dataclasses and pure functions:
+- `RenderConfig` (frozen dataclass): width, height, colormap, text settings
+- `RenderResources` (dataclass): GPU buffers, bind group, pipeline
+- `create_render_pipeline(config, device, format)` → `RenderResources`
+- `draw(resources, target_view, weights, ...)` renders a frame
+
+Two renderer classes provide the high-level API:
 - `OffscreenRenderer`: headless via Vulkan, returns numpy array (no display needed)
 - `LiveRenderer`: fullscreen window via rendercanvas/GLFW, training runs in
   background thread, `update()` pushes data thread-safely, `--live` flag in
   `train.py`
+
+## Speech-to-text
+
+Audio processing uses dataclasses and pure functions:
+- `SpeechConfig` (frozen dataclass): model size, thresholds, sample rate
+- `is_speech(audio, threshold)` --- pure function for speech detection
+- `transcribe(model, audio)` --- pure function for Whisper transcription
+- `SpeechListener` --- thin thread/queue wrapper around the pure functions
 
 ## Key APIs
 
