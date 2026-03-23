@@ -159,6 +159,14 @@ _UNIFORM_DTYPE = np.dtype([
 ])
 
 
+def _pick_surface_format(context: wgpu.GPUCanvasContext, device: wgpu.GPUDevice) -> str:
+    preferred = context.get_preferred_format(device.adapter)
+    if "srgb" not in preferred:
+        return preferred
+    linear = preferred.replace("-srgb", "")
+    return linear
+
+
 @dataclass(frozen=True)
 class RenderConfig:
     width: int
@@ -478,13 +486,12 @@ class LiveRenderer:
         self._canvas = canvas
 
         self._context = self._canvas.get_wgpu_context()  # type: ignore[union-attr]
-        self._context.configure(
-            device=self.device, format=wgpu.TextureFormat.rgba8unorm
-        )
+        surface_format = _pick_surface_format(self._context, self.device)
+        self._context.configure(device=self.device, format=surface_format)
 
         self._config = RenderConfig(width, height, colormap, text_strip_height, text_scale)
         self._res = create_render_pipeline(
-            self._config, self.device, wgpu.TextureFormat.rgba8unorm
+            self._config, self.device, surface_format
         )
         self.text_y = self._config.text_y
         self.text_cols = self._config.text_cols
