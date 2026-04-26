@@ -23,10 +23,10 @@ def _encode_text(text: str) -> list[int]:
 @dataclass
 class LaneBuffer:
     capacity: int = 320
-    _chars: list[int] = field(default_factory=list)
-    _attrs: list[int] = field(default_factory=list)
-    _probs: list[float] = field(default_factory=list)
-    _committed: int = 0
+    _chars: list[int] = field(default_factory=list, init=False, repr=False)
+    _attrs: list[int] = field(default_factory=list, init=False, repr=False)
+    _probs: list[float] = field(default_factory=list, init=False, repr=False)
+    _committed: int = field(default=0, init=False, repr=False)
 
     @property
     def count(self) -> int:
@@ -57,6 +57,7 @@ class LaneBuffer:
         self._trim()
 
     def commit_partial(self, prefix: str = "", attrs: int = 0) -> None:
+        """Promote the partial tail to committed; prefix gets ATTR_SOURCE_TAG, body has ATTR_PARTIAL cleared. ``attrs`` is applied to both."""
         partial_chars = self._chars[self._committed :]
         partial_probs = self._probs[self._committed :]
 

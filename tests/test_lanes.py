@@ -90,8 +90,39 @@ class TestLaneBufferReplaceTail:
         buf.replace_tail("hi", attrs=ATTR_PARTIAL)
         buf.commit_partial(prefix="▸ mic ▸ ", attrs=ATTR_SOURCE_TAG)
         chars, attrs, _ = buf.snapshot()
-        assert chars[0] == 226
+        expected = list("▸ mic ▸ ".encode("utf-8"))
+        assert chars[0] == expected[0]
         assert not (attrs[buf.count - 1] & ATTR_PARTIAL)
+
+    def test_commit_partial_with_no_prior_partial(self):
+        buf = LaneBuffer(capacity=8)
+        buf.push(ord("A"), prob=1.0)
+        buf.commit_partial(prefix="> ", attrs=ATTR_SOURCE_TAG)
+        chars, attrs, _ = buf.snapshot()
+        assert chars[0] == ord("A")
+        assert chars[1] == ord(">")
+        assert chars[2] == ord(" ")
+        assert attrs[1] & ATTR_SOURCE_TAG
+        assert buf.count == 3
+
+
+class TestLaneBufferOverflow:
+    def test_committed_clamps_on_overflow_of_committed_bytes(self):
+        # Push A,B,C (all committed, capacity=3 exactly full, _committed=3).
+        # Push D: buffer overflows to [B,C,D], _trim clamps _committed to 2,
+        # but push then sets _committed = len(_chars) = 3 (D is non-partial).
+        # replace_tail("xy") truncates to _committed=3 → [B,C,D], appends xy
+        # → [B,C,D,x,y], _trim removes 2 excess → [D,x,y].
+        buf = LaneBuffer(capacity=3)
+        for c in "ABC":
+            buf.push(ord(c), prob=1.0)
+        buf.push(ord("D"), prob=1.0)
+        buf.replace_tail("xy", attrs=ATTR_PARTIAL)
+        chars, _, _ = buf.snapshot()
+        assert buf.count == 3
+        assert chars[0] == ord("D")
+        assert chars[1] == ord("x")
+        assert chars[2] == ord("y")
 
 
 class TestLaneBufferSourceTag:
