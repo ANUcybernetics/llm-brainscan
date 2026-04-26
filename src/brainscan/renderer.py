@@ -154,10 +154,15 @@ _UNIFORM_DTYPE = np.dtype([
     ("height", np.uint32),
     ("param_count", np.uint32),
     ("colormap", np.uint32),
-    ("text_y", np.uint32),
-    ("text_scale", np.uint32),
-    ("text_cols", np.uint32),
-    ("text_count", np.uint32),
+    ("audience_y", np.uint32),
+    ("audience_height", np.uint32),
+    ("model_y", np.uint32),
+    ("model_height", np.uint32),
+    ("captions_y", np.uint32),
+    ("captions_height", np.uint32),
+    ("audience_count", np.uint32),
+    ("model_count", np.uint32),
+    ("captions_count", np.uint32),
     ("vmax", np.float32),
 ])
 
@@ -211,8 +216,11 @@ class RenderResources:
     uniform_buffer: wgpu.GPUBuffer
     weight_buffer: wgpu.GPUBuffer
     font_buffer: wgpu.GPUBuffer
-    text_chars_buffer: wgpu.GPUBuffer
-    text_probs_buffer: wgpu.GPUBuffer
+    audience_chars_buffer: wgpu.GPUBuffer
+    audience_attrs_buffer: wgpu.GPUBuffer
+    model_chars_buffer: wgpu.GPUBuffer
+    model_probs_buffer: wgpu.GPUBuffer
+    captions_chars_buffer: wgpu.GPUBuffer
     bind_group: wgpu.GPUBindGroup
     pipeline: wgpu.GPURenderPipeline
 
@@ -246,11 +254,14 @@ def create_render_pipeline(
     uniform_data["width"] = config.width
     uniform_data["height"] = config.height
     uniform_data["colormap"] = config.colormap
-    uniform_data["text_y"] = config.text_y
-    uniform_data["text_scale"] = config.text_scale
-    uniform_data["text_cols"] = config.text_cols
+    uniform_data["audience_y"] = config.audience_y
+    uniform_data["audience_height"] = config.audience_height
+    uniform_data["model_y"] = config.model_y
+    uniform_data["model_height"] = config.model_height
+    uniform_data["captions_y"] = config.captions_y
+    uniform_data["captions_height"] = config.captions_height
 
-    uniform_size = max(_UNIFORM_DTYPE.itemsize, 36)
+    uniform_size = max(_UNIFORM_DTYPE.itemsize, 64)
     uniform_buffer = device.create_buffer(
         size=uniform_size,
         usage=wgpu.BufferUsage.UNIFORM | wgpu.BufferUsage.COPY_DST,
@@ -268,20 +279,33 @@ def create_render_pipeline(
         usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST,
     )
 
-    text_chars_buffer = device.create_buffer(
-        size=config.max_text * 4,
+    from brainscan.font import generate_font_atlas
+    font_data = generate_font_atlas()
+    device.queue.write_buffer(font_buffer, 0, font_data.tobytes())
+
+    cap = max(config.lane_capacity, 1)
+    audience_chars_buffer = device.create_buffer(
+        size=cap * 4,
         usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST,
     )
-    text_probs_buffer = device.create_buffer(
-        size=config.max_text * 4,
+    audience_attrs_buffer = device.create_buffer(
+        size=cap * 4,
+        usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST,
+    )
+    model_chars_buffer = device.create_buffer(
+        size=cap * 4,
+        usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST,
+    )
+    model_probs_buffer = device.create_buffer(
+        size=cap * 4,
         usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST,
     )
 
-    if config.text_strip_height > 0:
-        from brainscan.font import generate_font_atlas
-
-        font_data = generate_font_atlas()
-        device.queue.write_buffer(font_buffer, 0, font_data.tobytes())
+    captions_cap = max(config.captions_capacity, 1)
+    captions_chars_buffer = device.create_buffer(
+        size=captions_cap * 4,
+        usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST,
+    )
 
     bind_group_layout = device.create_bind_group_layout(
         entries=[
@@ -294,7 +318,7 @@ def create_render_pipeline(
                     else wgpu.BufferBindingType.read_only_storage
                 },
             }
-            for i in range(5)
+            for i in range(8)
         ]
     )
 
@@ -302,8 +326,11 @@ def create_render_pipeline(
         uniform_buffer,
         weight_buffer,
         font_buffer,
-        text_chars_buffer,
-        text_probs_buffer,
+        audience_chars_buffer,
+        audience_attrs_buffer,
+        model_chars_buffer,
+        model_probs_buffer,
+        captions_chars_buffer,
     ]
     bind_group = device.create_bind_group(
         layout=bind_group_layout,
@@ -342,8 +369,11 @@ def create_render_pipeline(
         uniform_buffer=uniform_buffer,
         weight_buffer=weight_buffer,
         font_buffer=font_buffer,
-        text_chars_buffer=text_chars_buffer,
-        text_probs_buffer=text_probs_buffer,
+        audience_chars_buffer=audience_chars_buffer,
+        audience_attrs_buffer=audience_attrs_buffer,
+        model_chars_buffer=model_chars_buffer,
+        model_probs_buffer=model_probs_buffer,
+        captions_chars_buffer=captions_chars_buffer,
         bind_group=bind_group,
         pipeline=pipeline,
     )
