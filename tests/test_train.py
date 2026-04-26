@@ -114,7 +114,7 @@ class TestRenderFrame:
 
     def test_with_text(self, small_model):
         weights = capture_weights(small_model)
-        renderer = OffscreenRenderer(64, 64, text_strip_height=16, text_scale=1)
+        renderer = OffscreenRenderer(64, 64, model_height=16, audience_height=0, captions_height=0)
         img = render_frame(
             renderer,
             weights,
@@ -142,7 +142,7 @@ class TestEndToEndTrainAndRender:
         weights = capture_weights(model)
         tokens, probs = model.generate(b"the ", max_tokens=10)
 
-        renderer = OffscreenRenderer(32, 32, text_strip_height=16, text_scale=1)
+        renderer = OffscreenRenderer(32, 32, model_height=16, audience_height=0, captions_height=0)
         img = render_frame(
             renderer,
             weights,

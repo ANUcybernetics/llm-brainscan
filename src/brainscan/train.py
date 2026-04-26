@@ -90,7 +90,19 @@ def render_frame(
     buf, chars, probs = prepare_display_buffers(
         weights, flat_order, canvas_pixels, text_chars, text_probs
     )
-    return renderer.render(buf, text_chars=chars, text_probs=probs)
+    model_frame = None
+    if chars is not None and probs is not None:
+        cap = renderer.config.lane_capacity
+        padded_chars = np.zeros(cap, dtype=np.uint32)
+        padded_probs = np.zeros(cap, dtype=np.float32)
+        n = min(len(chars), cap)
+        padded_chars[:n] = chars[:n]
+        padded_probs[:n] = probs[:n]
+        from brainscan.renderer import LaneFrame
+        model_frame = LaneFrame(
+            chars=padded_chars, attrs_or_probs=padded_probs, count=n
+        )
+    return renderer.render(buf, model=model_frame)
 
 
 def main() -> None:
@@ -226,7 +238,7 @@ def main() -> None:
     offscreen_renderer = None
     if args.save_images:
         offscreen_renderer = OffscreenRenderer(
-            WIDTH, HEIGHT, text_strip_height=TEXT_STRIP_HEIGHT
+            WIDTH, HEIGHT, model_height=TEXT_STRIP_HEIGHT
         )
         print(f"Offscreen renderer initialised ({WIDTH}x{HEIGHT})")
 
@@ -235,7 +247,7 @@ def main() -> None:
         live_renderer = LiveRenderer(
             WIDTH,
             HEIGHT,
-            text_strip_height=TEXT_STRIP_HEIGHT,
+            model_height=TEXT_STRIP_HEIGHT,
             fullscreen=True,
         )
         print(f"Live renderer initialised ({WIDTH}x{HEIGHT})")
@@ -326,7 +338,19 @@ def main() -> None:
                             gen_chars,
                             gen_probs,
                         )
-                        live_renderer.update(buf, text_chars=chars, text_probs=probs)
+                        live_model_frame = None
+                        if chars is not None and probs is not None:
+                            from brainscan.renderer import LaneFrame
+                            cap = live_renderer.config.lane_capacity
+                            padded_chars = np.zeros(cap, dtype=np.uint32)
+                            padded_probs = np.zeros(cap, dtype=np.float32)
+                            n = min(len(chars), cap)
+                            padded_chars[:n] = chars[:n]
+                            padded_probs[:n] = probs[:n]
+                            live_model_frame = LaneFrame(
+                                chars=padded_chars, attrs_or_probs=padded_probs, count=n
+                            )
+                        live_renderer.update(buf, model=live_model_frame)
 
                 step += 1
 
