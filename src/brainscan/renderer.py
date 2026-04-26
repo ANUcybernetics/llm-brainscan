@@ -144,7 +144,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 COLORMAP_DIVERGING = 0
 COLORMAP_THERMAL = 1
 
-TEXT_SCALE_DEFAULT = 3
+LANE_SCALE = 3
+LANE_GLYPH_W = 8 * LANE_SCALE   # 24 px
+LANE_GLYPH_H = 16 * LANE_SCALE  # 48 px
+CAPTIONS_GLYPH_W = 8            # 1× scale
 
 _UNIFORM_DTYPE = np.dtype([
     ("width", np.uint32),
@@ -172,24 +175,32 @@ class RenderConfig:
     width: int
     height: int
     colormap: int = COLORMAP_DIVERGING
-    text_strip_height: int = 0
-    text_scale: int = TEXT_SCALE_DEFAULT
+    audience_height: int = 90
+    model_height: int = 90
+    captions_height: int = 12
 
     @property
-    def text_y(self) -> int:
-        return self.height - self.text_strip_height if self.text_strip_height > 0 else 0
+    def audience_y(self) -> int:
+        strip_total = self.audience_height + self.model_height + self.captions_height
+        return self.height - strip_total
 
     @property
-    def text_cols(self) -> int:
-        return self.width // (8 * self.text_scale) if self.text_strip_height > 0 else 0
+    def model_y(self) -> int:
+        return self.audience_y + self.audience_height
 
     @property
-    def max_text(self) -> int:
-        if self.text_strip_height <= 0:
-            return 1
-        return max(
-            self.text_cols * (self.text_strip_height // (16 * self.text_scale)), 1
-        )
+    def captions_y(self) -> int:
+        return self.model_y + self.model_height
+
+    @property
+    def lane_capacity(self) -> int:
+        cols = self.width // LANE_GLYPH_W
+        rows = self.audience_height // LANE_GLYPH_H
+        return max(cols * rows, 1)
+
+    @property
+    def captions_capacity(self) -> int:
+        return max(self.width // CAPTIONS_GLYPH_W, 1)
 
 
 @dataclass
