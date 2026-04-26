@@ -9,6 +9,7 @@ on an 8K canvas, one pixel per parameter.
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import logging
 import threading
@@ -339,8 +340,12 @@ def main() -> None:
         def on_partial(text: str) -> None:
             partial_holder["text"] = text
 
+        def on_speech_end() -> None:
+            partial_holder["text"] = ""
+
         if listener is not None:
             listener._partial_callback = on_partial
+            listener._speech_end_callback = on_speech_end
 
         gen_iter = model.streaming_generate(
             b"ROMEO: ", device=device, emit_prompt=False
@@ -388,7 +393,10 @@ def main() -> None:
                     token_fn=token_fn,
                 )
                 for ev in events.speak_events:
-                    tts.speak(ev.text)
+                    duration = tts.speak(ev.text)
+                    if duration > 0.0:
+                        # extend cooldown so listener doesn't re-trigger on TTS playback
+                        convo._cooldown_until = max(convo._cooldown_until, time.time() - t0 + duration)
                 _process_committed(snapshot, training_data)
 
                 # one optimiser step per loop turn
@@ -412,8 +420,12 @@ def main() -> None:
                         seed_corpus=raw_data,
                         audience_dir=output_dir / "audience",
                         persist_days=args.persist_audience_days,
-                        seed=hash(now_dt.date().isoformat() + str(args.seed))
-                        & 0xFFFFFFFF,
+                        seed=int.from_bytes(
+                            hashlib.sha256(
+                                f"{now_dt.date().isoformat()}-{args.seed}".encode()
+                            ).digest()[:4],
+                            "big",
+                        ),
                     )
                     training_data = TextBuffer(
                         res.corpus, persist_path=audience_log

@@ -319,6 +319,50 @@ class TestPartialCallback:
         assert len(partials) >= 1
         assert all(p == "hello" for p in partials)
 
+class TestSpeechEndCallback:
+    def test_speech_end_callback_fires_on_silence_after_speech(self):
+        chunk_samples = int(CHUNK_SECONDS * SAMPLE_RATE)
+        speech_chunk = np.full((chunk_samples, 1), 0.5, dtype=np.float32)
+        silence_chunk = np.zeros((chunk_samples, 1), dtype=np.float32)
+
+        read_count = 0
+
+        def mock_read(n):
+            nonlocal read_count
+            read_count += 1
+            if read_count == 1:
+                return speech_chunk, False
+            if read_count == 2:
+                return silence_chunk, False
+            listener._stop_event.set()
+            return silence_chunk, False
+
+        mock_stream = MagicMock()
+        mock_stream.read = mock_read
+        mock_stream.__enter__ = MagicMock(return_value=mock_stream)
+        mock_stream.__exit__ = MagicMock(return_value=False)
+        sd_mock = sys.modules["sounddevice"]
+        sd_mock.InputStream = MagicMock(return_value=mock_stream)
+
+        ended: list[bool] = []
+        listener = SpeechListener(
+            model_size="tiny",
+            device="cpu",
+            speech_end_callback=lambda: ended.append(True),
+        )
+
+        seg = MagicMock()
+        seg.text = "hi"
+        mock_model = MagicMock()
+        mock_model.transcribe.return_value = ([seg], None)
+        with patch.object(listener, "_load_model"):
+            listener._model = mock_model
+            listener._run()
+
+        assert len(ended) >= 1
+
+
+class TestNoCallbackSmokeTest:
     def test_no_partial_callback_when_unset(self):
         chunk_samples = int(CHUNK_SECONDS * SAMPLE_RATE)
         speech_chunk = np.full((chunk_samples, 1), 0.5, dtype=np.float32)

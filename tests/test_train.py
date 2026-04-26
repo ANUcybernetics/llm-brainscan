@@ -129,6 +129,29 @@ class TestSTTArgsPassthrough:
         assert listener.config.max_samples == int(15.0 * 16000)
 
 
+def test_daily_seed_is_reproducible():
+    """Same date + same base seed must produce the same daily seed across runs."""
+    import datetime as dt
+    import hashlib
+
+    def daily_seed(date: dt.date, base: int) -> int:
+        return int.from_bytes(
+            hashlib.sha256(
+                f"{date.isoformat()}-{base}".encode()
+            ).digest()[:4],
+            "big",
+        )
+
+    a = daily_seed(dt.date(2026, 4, 26), 42)
+    b = daily_seed(dt.date(2026, 4, 26), 42)
+    c = daily_seed(dt.date(2026, 4, 27), 42)
+    d = daily_seed(dt.date(2026, 4, 26), 99)
+
+    assert a == b
+    assert a != c
+    assert a != d
+
+
 def test_train_main_smoke(tmp_path, monkeypatch):
     """Run main() for a few steps and verify a frame is saved."""
     import sys

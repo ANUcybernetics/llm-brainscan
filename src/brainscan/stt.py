@@ -3,6 +3,7 @@
 import logging
 import queue
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
@@ -69,7 +70,8 @@ class SpeechListener:
     def __init__(
         self,
         config: SpeechConfig | None = None,
-        partial_callback: object | None = None,
+        partial_callback: Callable[[str], None] | None = None,
+        speech_end_callback: Callable[[], None] | None = None,
         **kwargs,
     ):
         if config is not None:
@@ -77,6 +79,7 @@ class SpeechListener:
         else:
             self.config = SpeechConfig(**kwargs)
         self._partial_callback = partial_callback
+        self._speech_end_callback = speech_end_callback
 
         self._text_queue: queue.Queue[str] = queue.Queue()
         self._stop_event = threading.Event()
@@ -162,6 +165,8 @@ class SpeechListener:
                     total_samples = sum(len(c) for c in speech_buffer)
                     if total_samples >= cfg.min_samples:
                         self._do_transcribe(speech_buffer)
+                    if self._speech_end_callback is not None:
+                        self._speech_end_callback()
                     speech_buffer = []
                     in_speech = False
                     last_partial_t = 0.0
