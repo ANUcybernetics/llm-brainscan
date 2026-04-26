@@ -253,7 +253,7 @@ class RenderConfig:
     @property
     def audience_y(self) -> int:
         strip_total = self.audience_height + self.model_height + self.captions_height
-        return self.height - strip_total
+        return max(0, self.height - strip_total)
 
     @property
     def model_y(self) -> int:
