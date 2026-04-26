@@ -318,6 +318,13 @@ def main() -> None:
         listener.start()
         print("Microphone listener started")
 
+    drone = None
+    if args.drone:
+        from brainscan.audio_drone import DroneOscillator
+
+        drone = DroneOscillator()
+        drone.start()
+
     def train_loop() -> None:
         nonlocal training_data
         optimiser = torch.optim.AdamW(model.parameters(), lr=args.lr)
@@ -420,6 +427,8 @@ def main() -> None:
 
                 if step % args.snapshot_every == 0:
                     current_weights = capture_weights(model)
+                    if drone is not None:
+                        drone.update_loss(loss.item())
                     dt_elapsed = time.time() - t0
                     print(
                         f"step {step:5d} | loss {loss.item():.4f}"
@@ -472,6 +481,9 @@ def main() -> None:
 
         if listener is not None:
             listener.stop()
+
+        if drone is not None:
+            drone.stop()
 
         if live_renderer is not None:
             live_renderer.close()
