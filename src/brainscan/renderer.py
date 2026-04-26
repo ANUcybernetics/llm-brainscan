@@ -44,6 +44,10 @@ struct Uniforms {
     captions_height: u32,
     captions_count: u32,
     vmax: f32,
+    model_caret_col: u32,
+    audience_pulse: f32,
+    audience_edge_pulse: f32,
+    global_brightness: f32,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -110,30 +114,39 @@ fn audience_band(px: u32, py: u32) -> vec4<f32> {
     let lane_py = py - uniforms.audience_y;
     let glyph_top = (uniforms.audience_height - LANE_CELL_H) / 2u;
     let bg = vec4<f32>(0.04, 0.04, 0.06, 1.0);
+    var final_rgb: vec3<f32>;
     if lane_py < glyph_top || lane_py >= glyph_top + LANE_CELL_H {
-        return bg;
-    }
-    let scroll_x = px + uniforms.audience_offset_px;
-    let col = scroll_x / LANE_CELL_W;
-    if col >= uniforms.audience_count {
-        return bg;
-    }
-    let glyph = audience_chars[col];
-    let gx = (scroll_x % LANE_CELL_W) / LANE_SCALE;
-    let gy = (lane_py - glyph_top) / LANE_SCALE;
-    if font_pixel(glyph, gx, gy) {
-        let attrs = audience_attrs[col];
-        var c: vec3<f32>;
-        if (attrs & ATTR_PARTIAL) != 0u {
-            c = vec3<f32>(0.50, 0.46, 0.38);
-        } else if (attrs & ATTR_SOURCE_TAG) != 0u {
-            c = vec3<f32>(0.62, 0.56, 0.42);
+        final_rgb = bg.rgb;
+    } else {
+        let scroll_x = px + uniforms.audience_offset_px;
+        let col = scroll_x / LANE_CELL_W;
+        if col >= uniforms.audience_count {
+            final_rgb = bg.rgb;
         } else {
-            c = vec3<f32>(0.94, 0.88, 0.72);
+            let glyph = audience_chars[col];
+            let gx = (scroll_x % LANE_CELL_W) / LANE_SCALE;
+            let gy = (lane_py - glyph_top) / LANE_SCALE;
+            if font_pixel(glyph, gx, gy) {
+                let attrs = audience_attrs[col];
+                var c: vec3<f32>;
+                if (attrs & ATTR_PARTIAL) != 0u {
+                    c = vec3<f32>(0.50, 0.46, 0.38);
+                } else if (attrs & ATTR_SOURCE_TAG) != 0u {
+                    c = vec3<f32>(0.62, 0.56, 0.42) * (1.0 + uniforms.audience_pulse * 0.6);
+                } else {
+                    c = vec3<f32>(0.94, 0.88, 0.72);
+                }
+                final_rgb = c;
+            } else {
+                final_rgb = bg.rgb;
+            }
         }
-        return vec4<f32>(c, 1.0);
     }
-    return bg;
+    if uniforms.audience_edge_pulse > 0.0 && px >= uniforms.width - 24u {
+        final_rgb = final_rgb + vec3<f32>(0.15, 0.10, 0.05) * uniforms.audience_edge_pulse;
+        final_rgb = clamp(final_rgb, vec3<f32>(0.0), vec3<f32>(1.0));
+    }
+    return vec4<f32>(final_rgb, 1.0);
 }
 
 fn model_band(px: u32, py: u32) -> vec4<f32> {
@@ -150,6 +163,11 @@ fn model_band(px: u32, py: u32) -> vec4<f32> {
     let col = scroll_x / LANE_CELL_W;
     if col >= uniforms.model_count {
         return bg;
+    }
+    if uniforms.model_caret_col != 0xFFFFFFFFu && col == uniforms.model_caret_col {
+        if (scroll_x % LANE_CELL_W) < 6u {
+            return vec4<f32>(1.0 * 0.85, 0.95 * 0.85, 1.10 * 0.85, 1.0);
+        }
     }
     let glyph = model_chars[col];
     let gx = (scroll_x % LANE_CELL_W) / LANE_SCALE;
@@ -193,32 +211,33 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     let cap_a = audience_band(px, py);
     if cap_a.x >= 0.0 {
-        return cap_a;
+        return vec4<f32>(cap_a.rgb * uniforms.global_brightness, 1.0);
     }
 
     let cap_m = model_band(px, py);
     if cap_m.x >= 0.0 {
-        return cap_m;
+        return vec4<f32>(cap_m.rgb * uniforms.global_brightness, 1.0);
     }
 
     let cap_c = captions_band(px, py);
     if cap_c.x >= 0.0 {
-        return cap_c;
+        return vec4<f32>(cap_c.rgb * uniforms.global_brightness, 1.0);
     }
 
     let idx = py * uniforms.width + px;
+    var final_rgb: vec3<f32>;
     if idx >= uniforms.param_count {
-        return vec4<f32>(0.05, 0.05, 0.05, 1.0);
-    }
-    let raw = weights[idx];
-    let w = select(raw / uniforms.vmax, 0.0, uniforms.vmax < 1e-10);
-    var color: vec3<f32>;
-    if uniforms.colormap == 1u {
-        color = thermal(w);
+        final_rgb = vec3<f32>(0.05, 0.05, 0.05);
     } else {
-        color = diverging(w);
+        let raw = weights[idx];
+        let w = select(raw / uniforms.vmax, 0.0, uniforms.vmax < 1e-10);
+        if uniforms.colormap == 1u {
+            final_rgb = thermal(w);
+        } else {
+            final_rgb = diverging(w);
+        }
     }
-    return vec4<f32>(color, 1.0);
+    return vec4<f32>(final_rgb * uniforms.global_brightness, 1.0);
 }
 """
 
@@ -247,6 +266,10 @@ _UNIFORM_DTYPE = np.dtype([
     ("captions_height", np.uint32),
     ("captions_count", np.uint32),
     ("vmax", np.float32),
+    ("model_caret_col", np.uint32),
+    ("audience_pulse", np.float32),
+    ("audience_edge_pulse", np.float32),
+    ("global_brightness", np.float32),
 ])
 
 
@@ -344,6 +367,10 @@ def create_render_pipeline(
     uniform_data["model_height"] = config.model_height
     uniform_data["captions_y"] = config.captions_y
     uniform_data["captions_height"] = config.captions_height
+    uniform_data["model_caret_col"] = np.uint32(0xFFFFFFFF)
+    uniform_data["audience_pulse"] = np.float32(0.0)
+    uniform_data["audience_edge_pulse"] = np.float32(0.0)
+    uniform_data["global_brightness"] = np.float32(1.0)
 
     uniform_size = max(_UNIFORM_DTYPE.itemsize, 64)
     uniform_buffer = device.create_buffer(
@@ -469,6 +496,9 @@ class LaneFrame:
     attrs_or_probs: np.ndarray
     count: int
     offset_px: int = 0
+    caret_col: int = -1
+    pulse: float = 0.0
+    edge_pulse: float = 0.0
 
 
 @dataclass
@@ -484,6 +514,7 @@ def draw(
     audience: LaneFrame | None = None,
     model: LaneFrame | None = None,
     captions: CaptionsFrame | None = None,
+    global_brightness: float = 1.0,
 ) -> None:
     device = res.device
     param_count = len(flat_weights)
@@ -530,6 +561,19 @@ def draw(
         )
 
     vmax = float(np.max(np.abs(flat_weights))) if param_count > 0 else 0.0
+
+    model_caret_col_val = np.uint32(0xFFFFFFFF)
+    audience_pulse_val = np.float32(0.0)
+    audience_edge_pulse_val = np.float32(0.0)
+    if model is not None:
+        model_caret_col_val = (
+            np.uint32(0xFFFFFFFF) if model.caret_col < 0
+            else np.uint32(model.caret_col)
+        )
+    if audience is not None:
+        audience_pulse_val = np.float32(audience.pulse)
+        audience_edge_pulse_val = np.float32(audience.edge_pulse)
+
     res.uniform_data["param_count"] = param_count
     res.uniform_data["colormap"] = res.config.colormap
     res.uniform_data["audience_count"] = audience_count
@@ -538,6 +582,10 @@ def draw(
     res.uniform_data["model_offset_px"] = model_offset_px
     res.uniform_data["captions_count"] = captions_count
     res.uniform_data["vmax"] = vmax
+    res.uniform_data["model_caret_col"] = model_caret_col_val
+    res.uniform_data["audience_pulse"] = audience_pulse_val
+    res.uniform_data["audience_edge_pulse"] = audience_edge_pulse_val
+    res.uniform_data["global_brightness"] = np.float32(global_brightness)
     device.queue.write_buffer(
         res.uniform_buffer, 0, res.uniform_data.tobytes()
     )
@@ -602,10 +650,11 @@ class OffscreenRenderer:
         audience: LaneFrame | None = None,
         model: LaneFrame | None = None,
         captions: CaptionsFrame | None = None,
+        global_brightness: float = 1.0,
     ) -> np.ndarray:
         """Render weight data and return RGBA image as numpy array."""
         target_view = self._target_texture.create_view()
-        draw(self._res, target_view, flat_weights, audience, model, captions)
+        draw(self._res, target_view, flat_weights, audience, model, captions, global_brightness)
 
         data = self.device.queue.read_texture(
             {"texture": self._target_texture, "mip_level": 0, "origin": (0, 0, 0)},
@@ -673,6 +722,7 @@ class LiveRenderer:
         self._audience: LaneFrame | None = None
         self._model: LaneFrame | None = None
         self._captions: CaptionsFrame | None = None
+        self._global_brightness: float = 1.0
 
         if fullscreen:
             self._go_fullscreen()
@@ -685,6 +735,7 @@ class LiveRenderer:
         audience: LaneFrame | None = None,
         model: LaneFrame | None = None,
         captions: CaptionsFrame | None = None,
+        global_brightness: float = 1.0,
     ) -> None:
         """Thread-safe update of weight and lane data for the next frame."""
         with self._lock:
@@ -692,6 +743,7 @@ class LiveRenderer:
             self._audience = audience
             self._model = model
             self._captions = captions
+            self._global_brightness = global_brightness
 
     def _draw(self) -> None:
         with self._lock:
@@ -699,12 +751,13 @@ class LiveRenderer:
             audience = self._audience
             model = self._model
             captions = self._captions
+            global_brightness = self._global_brightness
 
         if weights is None:
             return
 
         texture = self._context.get_current_texture()
-        draw(self._res, texture.create_view(), weights, audience, model, captions)
+        draw(self._res, texture.create_view(), weights, audience, model, captions, global_brightness)
 
     def _go_fullscreen(self) -> None:
         try:
