@@ -93,15 +93,32 @@ def _build_weight_buffer(
 
 
 def _build_lane_frames(
-    convo: Conversation, captions_state: CaptionsState
+    convo: Conversation,
+    captions_state: CaptionsState,
+    commit_pulse: float = 0.0,
+    partial_pulse: float = 0.0,
 ) -> tuple[LaneFrame, LaneFrame, CaptionsFrame]:
     a_chars, a_attrs, _ = convo.audience.snapshot()
     m_chars, _, m_probs = convo.model_lane.snapshot()
+
+    model_caret = (
+        convo.model_lane.count
+        if convo.state in (ConversationState.MUSE, ConversationState.RESPONDING)
+        else -1
+    )
+
     audience = LaneFrame(
-        chars=a_chars, attrs_or_probs=a_attrs, count=convo.audience.count
+        chars=a_chars,
+        attrs_or_probs=a_attrs,
+        count=convo.audience.count,
+        pulse=commit_pulse,
+        edge_pulse=partial_pulse,
     )
     model = LaneFrame(
-        chars=m_chars, attrs_or_probs=m_probs, count=convo.model_lane.count
+        chars=m_chars,
+        attrs_or_probs=m_probs,
+        count=convo.model_lane.count,
+        caret_col=model_caret,
     )
     cap_chars = compose_caption(captions_state)
     captions = CaptionsFrame(chars=cap_chars, count=len(cap_chars))
@@ -336,9 +353,24 @@ def main() -> None:
         )
 
         partial_holder: dict[str, str] = {"text": ""}
+        partial_pulse_holder: dict[str, float] = {"value": 0.0}
+        commit_pulse_holder: dict[str, float] = {"value": 0.0}
+        event_holder: dict[str, object] = {"text": "", "expires_at": 0.0}
+
+        def _show_event(text: str, duration: float = 5.0, now: float = 0.0) -> None:
+            event_holder["text"] = text
+            event_holder["expires_at"] = now + duration
+
+        def _current_event_line(now: float) -> str:
+            expires = float(event_holder["expires_at"])  # type: ignore[arg-type]
+            if now >= expires:
+                event_holder["text"] = ""
+                return ""
+            return str(event_holder["text"])
 
         def on_partial(text: str) -> None:
             partial_holder["text"] = text
+            partial_pulse_holder["value"] = 1.0
 
         def on_speech_end() -> None:
             partial_holder["text"] = ""
@@ -360,11 +392,16 @@ def main() -> None:
         print("\nTraining started (Ctrl+C to stop)...")
         t0 = time.time()
         step = 0
+        prev_state = ConversationState.MUSE
+        rebirth_state: dict[str, object] = {"phase": "idle", "started_at": 0.0}
+        global_brightness = 1.0
 
         try:
             while True:
                 if args.steps > 0 and step >= args.steps:
                     break
+
+                now_t = time.time() - t0
 
                 committed: list[str] = []
                 if listener is not None:
@@ -388,7 +425,7 @@ def main() -> None:
                     or bool(committed),
                 )
                 events = convo.step(
-                    now=time.time() - t0,
+                    now=now_t,
                     listener=snapshot,
                     token_fn=token_fn,
                 )
@@ -396,8 +433,24 @@ def main() -> None:
                     duration = tts.speak(ev.text)
                     if duration > 0.0:
                         # extend cooldown so listener doesn't re-trigger on TTS playback
-                        convo._cooldown_until = max(convo._cooldown_until, time.time() - t0 + duration)
+                        convo._cooldown_until = max(convo._cooldown_until, now_t + duration)
                 _process_committed(snapshot, training_data)
+
+                # detect LISTENING → RESPONDING transition (commit)
+                if (
+                    prev_state == ConversationState.LISTENING
+                    and convo.state == ConversationState.RESPONDING
+                ):
+                    commit_pulse_holder["value"] = 1.0
+                prev_state = convo.state
+
+                # decay pulses
+                commit_pulse_holder["value"] = max(
+                    0.0, commit_pulse_holder["value"] - 0.1
+                )
+                partial_pulse_holder["value"] = max(
+                    0.0, partial_pulse_holder["value"] - 0.1
+                )
 
                 # one optimiser step per loop turn
                 x, y = prepare_batches(
@@ -408,34 +461,53 @@ def main() -> None:
                 loss.backward()
                 optimiser.step()
 
-                # daily rebirth check
-                now_dt = dt.datetime.now()
-                if rebirth_sched.due(now_dt):
-                    yesterday = now_dt.date() - dt.timedelta(days=1)
-                    rotate_audience_log(
-                        audience_log, output_dir / "audience", yesterday
-                    )
-                    res = rebirth(
-                        model=model,
-                        seed_corpus=raw_data,
-                        audience_dir=output_dir / "audience",
-                        persist_days=args.persist_audience_days,
-                        seed=int.from_bytes(
-                            hashlib.sha256(
-                                f"{now_dt.date().isoformat()}-{args.seed}".encode()
-                            ).digest()[:4],
-                            "big",
-                        ),
-                    )
-                    training_data = TextBuffer(
-                        res.corpus, persist_path=audience_log
-                    )
-                    optimiser = torch.optim.AdamW(model.parameters(), lr=args.lr)
-                    rebirth_sched.mark_fired(now_dt)
-                    (output_dir / "rebirth.log").open("a").write(
-                        f"{now_dt.date().isoformat()} seed={res.seed}"
-                        f" persist_days={args.persist_audience_days}\n"
-                    )
+                # rebirth state machine
+                rebirth_phase = str(rebirth_state["phase"])
+                if rebirth_phase == "idle":
+                    now_dt = dt.datetime.now()
+                    if rebirth_sched.due(now_dt):
+                        rebirth_state = {"phase": "fading_out", "started_at": now_t}
+                        global_brightness = 1.0
+                elif rebirth_phase == "fading_out":
+                    elapsed = now_t - float(rebirth_state["started_at"])  # type: ignore[arg-type]
+                    global_brightness = max(0.0, 1.0 - elapsed / 2.0)
+                    if elapsed >= 2.0:
+                        now_dt = dt.datetime.now()
+                        yesterday = now_dt.date() - dt.timedelta(days=1)
+                        rotate_audience_log(
+                            audience_log, output_dir / "audience", yesterday
+                        )
+                        res = rebirth(
+                            model=model,
+                            seed_corpus=raw_data,
+                            audience_dir=output_dir / "audience",
+                            persist_days=args.persist_audience_days,
+                            seed=int.from_bytes(
+                                hashlib.sha256(
+                                    f"{now_dt.date().isoformat()}-{args.seed}".encode()
+                                ).digest()[:4],
+                                "big",
+                            ),
+                        )
+                        training_data = TextBuffer(
+                            res.corpus, persist_path=audience_log
+                        )
+                        optimiser = torch.optim.AdamW(model.parameters(), lr=args.lr)
+                        rebirth_sched.mark_fired(now_dt)
+                        (output_dir / "rebirth.log").open("a").write(
+                            f"{now_dt.date().isoformat()} seed={res.seed}"
+                            f" persist_days={args.persist_audience_days}\n"
+                        )
+                        _show_event(f"dawn {now_dt.strftime('%H:%M')}", now=now_t)
+                        rebirth_state = {"phase": "fading_in", "started_at": now_t}
+                elif rebirth_phase == "fading_in":
+                    elapsed = now_t - float(rebirth_state["started_at"])  # type: ignore[arg-type]
+                    global_brightness = min(1.0, elapsed / 2.0)
+                    if elapsed >= 2.0:
+                        global_brightness = 1.0
+                        rebirth_state = {"phase": "idle", "started_at": 0.0}
+                else:
+                    global_brightness = 1.0
 
                 if step % args.snapshot_every == 0:
                     current_weights = capture_weights(model)
@@ -451,9 +523,13 @@ def main() -> None:
                     captions_state = CaptionsState(
                         state_label=_caption_state_label(convo, step, loss.item()),
                         cursor_label="",
+                        event_line=_current_event_line(now_t),
                     )
                     audience, model_frame, captions = _build_lane_frames(
-                        convo, captions_state
+                        convo,
+                        captions_state,
+                        commit_pulse=commit_pulse_holder["value"],
+                        partial_pulse=partial_pulse_holder["value"],
                     )
 
                     if offscreen_renderer is not None:
@@ -469,6 +545,7 @@ def main() -> None:
                             audience=audience,
                             model=model_frame,
                             captions=captions,
+                            global_brightness=global_brightness,
                         )
                         save_frame(
                             canvas, frames_dir / f"frame_{step:06d}.png"
@@ -484,6 +561,7 @@ def main() -> None:
                             audience=audience,
                             model=model_frame,
                             captions=captions,
+                            global_brightness=global_brightness,
                         )
 
                 step += 1
