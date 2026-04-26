@@ -119,3 +119,33 @@ class GPT(nn.Module):
         if was_training:
             self.train()
         return tokens, probs
+
+    @torch.no_grad()
+    def streaming_generate(
+        self,
+        prompt_bytes: bytes,
+        device: torch.device | None = None,
+        emit_prompt: bool = False,
+    ):
+        if device is None:
+            device = next(self.parameters()).device
+        was_training = self.training
+        self.eval()
+        try:
+            tokens = list(prompt_bytes)
+            if emit_prompt:
+                for t in tokens:
+                    yield int(t), 1.0
+            context = torch.tensor([tokens], dtype=torch.long, device=device)
+            while True:
+                logits, _ = self(context[:, -self.sequence_len :])
+                p = torch.softmax(logits[:, -1, :], dim=-1)
+                next_token = torch.multinomial(p, num_samples=1)
+                tok = int(next_token.item())
+                token_prob = float(p[0, tok].item())
+                tokens.append(tok)
+                context = torch.cat([context, next_token], dim=1)
+                yield tok, token_prob
+        finally:
+            if was_training:
+                self.train()

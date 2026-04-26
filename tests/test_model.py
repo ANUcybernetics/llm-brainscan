@@ -137,3 +137,48 @@ class TestGPTGenerationLegacy:
                 context = torch.cat([context, next_token], dim=1)
         assert context.shape == (1, 14)
         assert (context >= 0).all() and (context < 256).all()
+
+
+class TestStreamingGenerate:
+    def test_yields_one_token_per_step(self, device):
+        model = GPT(**SMALL_CONFIG).to(device)
+        gen = model.streaming_generate(b"abc", device=device)
+        token, prob = next(gen)
+        assert isinstance(token, int)
+        assert 0 <= token < 256
+        assert 0.0 <= prob <= 1.0
+
+    def test_can_stop_early(self, device):
+        model = GPT(**SMALL_CONFIG).to(device)
+        gen = model.streaming_generate(b"x", device=device)
+        produced = [next(gen) for _ in range(5)]
+        assert len(produced) == 5
+        gen.close()
+
+    def test_resumed_generation_consistent(self, device):
+        model = GPT(**SMALL_CONFIG).to(device)
+        torch.manual_seed(0)
+        gen_a = model.streaming_generate(b"hi", device=device)
+        out_a = [next(gen_a)[0] for _ in range(8)]
+        gen_a.close()
+
+        # generate same length in two halves with same seed
+        torch.manual_seed(0)
+        gen_b = model.streaming_generate(b"hi", device=device)
+        out_b = [next(gen_b)[0] for _ in range(4)]
+        out_b.extend(next(gen_b)[0] for _ in range(4))
+        gen_b.close()
+
+        assert out_a == out_b
+
+    def test_prompt_is_consumed_first(self, device):
+        model = GPT(**SMALL_CONFIG).to(device)
+        gen = model.streaming_generate(
+            b"hi", device=device, emit_prompt=True
+        )
+        prompt_tokens = [next(gen) for _ in range(2)]
+        assert prompt_tokens[0][0] == ord("h")
+        assert prompt_tokens[1][0] == ord("i")
+        # then real generation begins
+        new_tok, _ = next(gen)
+        assert isinstance(new_tok, int)
