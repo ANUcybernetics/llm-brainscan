@@ -5,11 +5,12 @@ import numpy as np
 import torch
 from conftest import SMALL_CONFIG
 
+from brainscan.conversation import Conversation, ListenerSnapshot
 from brainscan.data import prepare_batches
+from brainscan.lanes import LaneBuffer
 from brainscan.model import GPT
-from brainscan.renderer import OffscreenRenderer
+from brainscan.renderer import LaneFrame, OffscreenRenderer, flatten_weights
 from brainscan.snapshot import capture_weights
-from brainscan.train import prepare_display_buffers, render_frame
 
 
 class TestTrainingLoop:
@@ -61,97 +62,48 @@ class TestTrainingLoop:
         assert not torch.equal(snapshots[0][first_param], snapshots[-1][first_param])
 
 
-class TestPrepareDisplayBuffers:
-    def _canvas_for(self, model):
-        total = sum(p.numel() for p in model.parameters())
-        return total + 1024
+class TestConversationFrameWiring:
+    def _make_renderer(self):
+        return OffscreenRenderer(
+            64, 144, audience_height=48, model_height=48, captions_height=16
+        )
 
-    def test_returns_correct_shapes(self, small_model):
+    def test_render_with_lane_frames(self, small_model):
         weights = capture_weights(small_model)
-        canvas = self._canvas_for(small_model)
-        buf, chars, probs = prepare_display_buffers(
-            weights,
-            list(weights.keys()),
-            canvas,
-            text_chars=[65, 66],
-            text_probs=[1.0, 0.5],
+        renderer = self._make_renderer()
+
+        a_buf = LaneBuffer(capacity=renderer.config.lane_capacity)
+        a_buf.push_text("hi", attrs=0)
+        m_buf = LaneBuffer(capacity=renderer.config.lane_capacity)
+        m_buf.push_text("yo", prob=0.8)
+
+        a_chars, a_attrs, _ = a_buf.snapshot()
+        m_chars, _, m_probs = m_buf.snapshot()
+
+        canvas_pixels = renderer.width * renderer.height
+        np_weights = {k: v.cpu().numpy() for k, v in weights.items()}
+        flat, count = flatten_weights(np_weights)
+        buf = np.zeros(canvas_pixels, dtype=np.float32)
+        n = min(count, canvas_pixels)
+        buf[:n] = flat[:n]
+
+        img = renderer.render(
+            buf,
+            audience=LaneFrame(chars=a_chars, attrs_or_probs=a_attrs, count=a_buf.count),
+            model=LaneFrame(chars=m_chars, attrs_or_probs=m_probs, count=m_buf.count),
         )
-        assert buf.shape == (canvas,)
-        assert buf.dtype == np.float32
-        assert chars is not None
-        assert probs is not None
-        assert chars.dtype == np.uint32
-        assert probs.dtype == np.float32
-
-    def test_none_text_returns_none(self, small_model):
-        weights = capture_weights(small_model)
-        canvas = self._canvas_for(small_model)
-        buf, chars, probs = prepare_display_buffers(
-            weights, list(weights.keys()), canvas
-        )
-        assert chars is None
-        assert probs is None
-
-    def test_buffer_size_matches_canvas(self, small_model):
-        weights = capture_weights(small_model)
-        total_params = sum(p.numel() for p in small_model.parameters())
-        canvas = total_params + 1024
-        buf, _, _ = prepare_display_buffers(
-            weights, list(weights.keys()), canvas
-        )
-        assert len(buf) == canvas
-        assert np.count_nonzero(buf) > 0
-        assert np.count_nonzero(buf) <= total_params
+        assert img.shape == (144, 64, 4)
 
 
-class TestRenderFrame:
-    def test_produces_image(self, small_model):
-        weights = capture_weights(small_model)
-        renderer = OffscreenRenderer(32, 32)
-        img = render_frame(renderer, weights, list(weights.keys()))
-        assert img.shape == (32, 32, 4)
-        assert img.dtype == np.uint8
+class TestTrainLoopUsesConversation:
+    def test_committed_input_appended_to_corpus(self, device):
+        from brainscan.data import TextBuffer
+        from brainscan.train import _process_committed
 
-    def test_with_text(self, small_model):
-        weights = capture_weights(small_model)
-        renderer = OffscreenRenderer(64, 64, model_height=16, audience_height=0, captions_height=0)
-        img = render_frame(
-            renderer,
-            weights,
-            list(weights.keys()),
-            text_chars=[ord("A"), ord("B")],
-            text_probs=[1.0, 0.5],
-        )
-        assert img.shape == (64, 64, 4)
-
-
-class TestEndToEndTrainAndRender:
-    def test_train_snapshot_render_cycle(self, device):
-        model = GPT(**SMALL_CONFIG).to(device)
-        optimiser = torch.optim.AdamW(model.parameters(), lr=1e-3)
-        data = b"the quick brown fox " * 100
-
-        x, y = prepare_batches(
-            data, batch_size=4, sequence_len=SMALL_CONFIG["sequence_len"], device=device
-        )
-        _, loss = model(x, y)
-        optimiser.zero_grad()
-        loss.backward()
-        optimiser.step()
-
-        weights = capture_weights(model)
-        tokens, probs = model.generate(b"the ", max_tokens=10)
-
-        renderer = OffscreenRenderer(32, 32, model_height=16, audience_height=0, captions_height=0)
-        img = render_frame(
-            renderer,
-            weights,
-            list(weights.keys()),
-            text_chars=tokens,
-            text_probs=probs,
-        )
-        assert img.shape == (32, 32, 4)
-        assert np.any(img[:, :, :3] > 20)
+        buf = TextBuffer(b"seed")
+        listener = ListenerSnapshot(committed=["from-mic"])
+        _process_committed(listener, buf)
+        assert b"from-mic" in buf.data
 
 
 class TestSTTArgsPassthrough:
@@ -175,3 +127,33 @@ class TestSTTArgsPassthrough:
         assert listener.config.silence_threshold == 0.05
         assert listener.config.min_samples == int(0.3 * 16000)
         assert listener.config.max_samples == int(15.0 * 16000)
+
+
+def test_train_main_smoke(tmp_path, monkeypatch):
+    """Run main() for a few steps and verify a frame is saved."""
+    import sys
+
+    from brainscan import train as train_mod
+
+    # tiny model so the test runs in seconds
+    args = [
+        "train",
+        "--no-mic",
+        "--steps", "5",
+        "--snapshot-every", "1",
+        "--n-layer", "1",
+        "--n-head", "1",
+        "--n-embd", "16",
+        "--sequence-len", "16",
+        "--batch-size", "2",
+        "--gen-tokens", "4",
+        "--save-images",
+        "--output-dir", str(tmp_path),
+        "--data", str(tmp_path / "tiny.txt"),
+    ]
+    (tmp_path / "tiny.txt").write_bytes(b"abcdefghij" * 200)
+
+    monkeypatch.setattr(sys, "argv", args)
+    train_mod.main()
+    frames = sorted((tmp_path / "frames").glob("*.png"))
+    assert len(frames) >= 1

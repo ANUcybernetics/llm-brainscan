@@ -8,15 +8,23 @@ on an 8K canvas, one pixel per parameter.
 """
 
 import argparse
+import datetime as dt
 import json
 import logging
+import threading
 import time
 from pathlib import Path
 
 import numpy as np
 import torch
 
-from brainscan.data import TextBuffer, decode, prepare_batches
+from brainscan.captions import CaptionsState, compose_caption
+from brainscan.conversation import (
+    Conversation,
+    ConversationState,
+    ListenerSnapshot,
+)
+from brainscan.data import TextBuffer, prepare_batches
 from brainscan.layout import (
     HEIGHT,
     LAYOUT_HEIGHT,
@@ -28,13 +36,16 @@ from brainscan.layout import (
     layout_to_flat_order,
 )
 from brainscan.model import GPT
+from brainscan.rebirth import RebirthScheduler, rebirth, rotate_audience_log
 from brainscan.renderer import (
+    CaptionsFrame,
     LaneFrame,
     LiveRenderer,
     OffscreenRenderer,
     flatten_weights,
 )
 from brainscan.snapshot import capture_weights
+from brainscan.tts import TTSEngine
 
 log = logging.getLogger(__name__)
 
@@ -67,46 +78,49 @@ def save_frame(canvas: np.ndarray, path: Path) -> None:
     img.save(path)
 
 
-def prepare_display_buffers(
+def _build_weight_buffer(
     weights: dict[str, torch.Tensor],
     flat_order: list[str],
     canvas_pixels: int,
-    text_chars: list[int] | None = None,
-    text_probs: list[float] | None = None,
-) -> tuple[np.ndarray, np.ndarray | None, np.ndarray | None]:
+) -> np.ndarray:
     np_weights = {k: v.cpu().numpy() for k, v in weights.items()}
     flat, count = flatten_weights(np_weights, layout_order=flat_order)
     buf = np.zeros(canvas_pixels, dtype=np.float32)
     n = min(count, canvas_pixels)
     buf[:n] = flat[:n]
-    chars = np.array(text_chars, dtype=np.uint32) if text_chars else None
-    probs = np.array(text_probs, dtype=np.float32) if text_probs else None
-    return buf, chars, probs
+    return buf
 
 
-def render_frame(
-    renderer: OffscreenRenderer,
-    weights: dict[str, torch.Tensor],
-    flat_order: list[str],
-    text_chars: list[int] | None = None,
-    text_probs: list[float] | None = None,
-) -> np.ndarray:
-    canvas_pixels = renderer.width * renderer.height
-    buf, chars, probs = prepare_display_buffers(
-        weights, flat_order, canvas_pixels, text_chars, text_probs
+def _build_lane_frames(
+    convo: Conversation, captions_state: CaptionsState
+) -> tuple[LaneFrame, LaneFrame, CaptionsFrame]:
+    a_chars, a_attrs, _ = convo.audience.snapshot()
+    m_chars, _, m_probs = convo.model_lane.snapshot()
+    audience = LaneFrame(
+        chars=a_chars, attrs_or_probs=a_attrs, count=convo.audience.count
     )
-    model_frame = None
-    if chars is not None and probs is not None:
-        cap = renderer.config.lane_capacity
-        padded_chars = np.zeros(cap, dtype=np.uint32)
-        padded_probs = np.zeros(cap, dtype=np.float32)
-        n = min(len(chars), cap)
-        padded_chars[:n] = chars[:n]
-        padded_probs[:n] = probs[:n]
-        model_frame = LaneFrame(
-            chars=padded_chars, attrs_or_probs=padded_probs, count=n
-        )
-    return renderer.render(buf, model=model_frame)
+    model = LaneFrame(
+        chars=m_chars, attrs_or_probs=m_probs, count=convo.model_lane.count
+    )
+    cap_chars = compose_caption(captions_state)
+    captions = CaptionsFrame(chars=cap_chars, count=len(cap_chars))
+    return audience, model, captions
+
+
+def _process_committed(
+    listener: ListenerSnapshot, training: TextBuffer
+) -> None:
+    for text in listener.committed:
+        log.info("Audience: %s", text)
+        training.append(text)
+
+
+def _caption_state_label(convo: Conversation, step: int, loss: float) -> str:
+    if convo.state == ConversationState.LISTENING:
+        return "listening..."
+    if convo.state == ConversationState.RESPONDING:
+        return "responding..."
+    return f"musing | step {step:,} loss {loss:.2f}"
 
 
 def main() -> None:
@@ -185,6 +199,32 @@ def main() -> None:
         default=30.0,
         help="Maximum speech duration before forced transcription",
     )
+    parser.add_argument(
+        "--speak", action="store_true", help="Enable TTS for model responses"
+    )
+    parser.add_argument(
+        "--drone",
+        action="store_true",
+        help="Enable sub-bass drone tracking training loss",
+    )
+    parser.add_argument(
+        "--rebirth-at",
+        type=str,
+        default=None,
+        help="Daily rebirth time HH:MM (24h, local). Default off.",
+    )
+    parser.add_argument(
+        "--persist-audience-days",
+        type=int,
+        default=7,
+        help="Number of past audience-log days to prepend on rebirth (0 to disable)",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="Base seed for daily rebirth (per-day seed = hash(date)+base)",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -242,7 +282,8 @@ def main() -> None:
     offscreen_renderer = None
     if args.save_images:
         offscreen_renderer = OffscreenRenderer(
-            WIDTH, HEIGHT,
+            WIDTH,
+            HEIGHT,
             audience_height=AUDIENCE_HEIGHT,
             model_height=MODEL_LANE_HEIGHT,
             captions_height=CAPTIONS_HEIGHT,
@@ -278,10 +319,31 @@ def main() -> None:
         print("Microphone listener started")
 
     def train_loop() -> None:
+        nonlocal training_data
         optimiser = torch.optim.AdamW(model.parameters(), lr=args.lr)
 
-        gen_chars: list[int] = []
-        gen_probs: list[float] = []
+        convo = Conversation(
+            tts_enabled=args.speak,
+            response_token_count=args.gen_tokens,
+        )
+
+        partial_holder: dict[str, str] = {"text": ""}
+
+        def on_partial(text: str) -> None:
+            partial_holder["text"] = text
+
+        if listener is not None:
+            listener._partial_callback = on_partial
+
+        gen_iter = model.streaming_generate(
+            b"ROMEO: ", device=device, emit_prompt=False
+        )
+
+        def token_fn(_now: float):
+            return next(gen_iter)
+
+        rebirth_sched = RebirthScheduler(at_hh_mm=args.rebirth_at)
+        tts = TTSEngine(enabled=args.speak)
 
         print("\nTraining started (Ctrl+C to stop)...")
         t0 = time.time()
@@ -292,18 +354,37 @@ def main() -> None:
                 if args.steps > 0 and step >= args.steps:
                     break
 
+                committed: list[str] = []
                 if listener is not None:
-                    new_texts = listener.get_text()
-                    for text in new_texts:
-                        log.info("Audience: %s", text)
-                        prompt = text.encode("utf-8", errors="replace")
-                        gen_chars, gen_probs = model.generate(
-                            prompt, args.gen_tokens, device
-                        )
-                        generated = decode(gen_chars)
-                        log.info("Response: %s", generated[:200])
-                        training_data.append(text)
+                    committed = listener.get_text()
 
+                # Reset gen_iter BEFORE convo.step so the first RESPONDING
+                # token is sampled from the response-seeded generator
+                # rather than the muse one.
+                if committed:
+                    partial_holder["text"] = ""
+                    gen_iter.close()
+                    seed = committed[-1].encode("utf-8", errors="replace")
+                    gen_iter = model.streaming_generate(
+                        seed, device=device, emit_prompt=False
+                    )
+
+                snapshot = ListenerSnapshot(
+                    committed=committed,
+                    partial=partial_holder["text"] or None,
+                    in_speech=bool(partial_holder["text"])
+                    or bool(committed),
+                )
+                events = convo.step(
+                    now=time.time() - t0,
+                    listener=snapshot,
+                    token_fn=token_fn,
+                )
+                for ev in events.speak_events:
+                    tts.speak(ev.text)
+                _process_committed(snapshot, training_data)
+
+                # one optimiser step per loop turn
                 x, y = prepare_batches(
                     training_data, args.batch_size, args.sequence_len, device
                 )
@@ -312,53 +393,77 @@ def main() -> None:
                 loss.backward()
                 optimiser.step()
 
-                if step % args.snapshot_every == 0:
-                    current_weights = capture_weights(model)
-
-                    dt = time.time() - t0
-                    data_size = len(training_data)
-                    print(
-                        f"step {step:5d} | loss {loss.item():.4f}"
-                        f" | data {data_size:,}B | {dt:.1f}s"
+                # daily rebirth check
+                now_dt = dt.datetime.now()
+                if rebirth_sched.due(now_dt):
+                    yesterday = now_dt.date() - dt.timedelta(days=1)
+                    rotate_audience_log(
+                        audience_log, output_dir / "audience", yesterday
+                    )
+                    res = rebirth(
+                        model=model,
+                        seed_corpus=raw_data,
+                        audience_dir=output_dir / "audience",
+                        persist_days=args.persist_audience_days,
+                        seed=hash(now_dt.date().isoformat() + str(args.seed))
+                        & 0xFFFFFFFF,
+                    )
+                    training_data = TextBuffer(
+                        res.corpus, persist_path=audience_log
+                    )
+                    optimiser = torch.optim.AdamW(model.parameters(), lr=args.lr)
+                    rebirth_sched.mark_fired(now_dt)
+                    (output_dir / "rebirth.log").open("a").write(
+                        f"{now_dt.date().isoformat()} seed={res.seed}"
+                        f" persist_days={args.persist_audience_days}\n"
                     )
 
-                    if not gen_chars:
-                        gen_chars, gen_probs = model.generate(
-                            b"ROMEO: ",
-                            args.gen_tokens,
-                            device,
-                        )
+                if step % args.snapshot_every == 0:
+                    current_weights = capture_weights(model)
+                    dt_elapsed = time.time() - t0
+                    print(
+                        f"step {step:5d} | loss {loss.item():.4f}"
+                        f" | data {len(training_data):,}B"
+                        f" | {dt_elapsed:.1f}s | {convo.state.value}"
+                    )
+
+                    captions_state = CaptionsState(
+                        state_label=_caption_state_label(convo, step, loss.item()),
+                        cursor_label="",
+                    )
+                    audience, model_frame, captions = _build_lane_frames(
+                        convo, captions_state
+                    )
 
                     if offscreen_renderer is not None:
-                        canvas = render_frame(
-                            offscreen_renderer,
-                            current_weights,
-                            flat_order,
-                            gen_chars,
-                            gen_probs,
+                        canvas_pixels = (
+                            offscreen_renderer.width
+                            * offscreen_renderer.height
                         )
-                        save_frame(canvas, frames_dir / f"frame_{step:06d}.png")
+                        buf = _build_weight_buffer(
+                            current_weights, flat_order, canvas_pixels
+                        )
+                        canvas = offscreen_renderer.render(
+                            buf,
+                            audience=audience,
+                            model=model_frame,
+                            captions=captions,
+                        )
+                        save_frame(
+                            canvas, frames_dir / f"frame_{step:06d}.png"
+                        )
 
                     if live_renderer is not None:
-                        buf, chars, probs = prepare_display_buffers(
-                            current_weights,
-                            flat_order,
-                            WIDTH * HEIGHT,
-                            gen_chars,
-                            gen_probs,
+                        canvas_pixels = WIDTH * HEIGHT
+                        buf = _build_weight_buffer(
+                            current_weights, flat_order, canvas_pixels
                         )
-                        live_model_frame = None
-                        if chars is not None and probs is not None:
-                            cap = live_renderer.config.lane_capacity
-                            padded_chars = np.zeros(cap, dtype=np.uint32)
-                            padded_probs = np.zeros(cap, dtype=np.float32)
-                            n = min(len(chars), cap)
-                            padded_chars[:n] = chars[:n]
-                            padded_probs[:n] = probs[:n]
-                            live_model_frame = LaneFrame(
-                                chars=padded_chars, attrs_or_probs=padded_probs, count=n
-                            )
-                        live_renderer.update(buf, model=live_model_frame)
+                        live_renderer.update(
+                            buf,
+                            audience=audience,
+                            model=model_frame,
+                            captions=captions,
+                        )
 
                 step += 1
 
@@ -367,7 +472,6 @@ def main() -> None:
 
         if listener is not None:
             listener.stop()
-            print("Microphone listener stopped")
 
         if live_renderer is not None:
             live_renderer.close()
@@ -380,8 +484,6 @@ def main() -> None:
             )
 
     if live_renderer is not None:
-        import threading
-
         train_thread = threading.Thread(target=train_loop, daemon=True)
         train_thread.start()
         live_renderer.run()
