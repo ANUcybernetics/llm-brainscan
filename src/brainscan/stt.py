@@ -27,6 +27,7 @@ class SpeechConfig:
     min_speech_seconds: float = MIN_SPEECH_SECONDS
     max_speech_seconds: float = MAX_SPEECH_SECONDS
     audio_device: int | None = None
+    partial_interval_seconds: float = 1.0
 
     @property
     def min_samples(self) -> int:
@@ -65,11 +66,17 @@ def load_whisper_model(config: SpeechConfig) -> object:
 
 
 class SpeechListener:
-    def __init__(self, config: SpeechConfig | None = None, **kwargs):
+    def __init__(
+        self,
+        config: SpeechConfig | None = None,
+        partial_callback: object | None = None,
+        **kwargs,
+    ):
         if config is not None:
             self.config = config
         else:
             self.config = SpeechConfig(**kwargs)
+        self._partial_callback = partial_callback
 
         self._text_queue: queue.Queue[str] = queue.Queue()
         self._stop_event = threading.Event()
@@ -114,6 +121,8 @@ class SpeechListener:
 
         speech_buffer: list[np.ndarray] = []
         in_speech = False
+        last_partial_t = 0.0
+        import time as _time
 
         with sd.InputStream(
             samplerate=cfg.sample_rate,
@@ -132,16 +141,30 @@ class SpeechListener:
                     speech_buffer.append(chunk)
                     in_speech = True
                     total_samples = sum(len(c) for c in speech_buffer)
+
+                    now = _time.time()
+                    if (
+                        self._partial_callback is not None
+                        and now - last_partial_t >= cfg.partial_interval_seconds
+                    ):
+                        partial_audio = np.concatenate(speech_buffer)
+                        partial_text = transcribe(self._model, partial_audio)
+                        if partial_text:
+                            self._partial_callback(partial_text)
+                        last_partial_t = now
+
                     if total_samples >= cfg.max_samples:
                         self._do_transcribe(speech_buffer)
                         speech_buffer = []
                         in_speech = False
+                        last_partial_t = 0.0
                 elif in_speech:
                     total_samples = sum(len(c) for c in speech_buffer)
                     if total_samples >= cfg.min_samples:
                         self._do_transcribe(speech_buffer)
                     speech_buffer = []
                     in_speech = False
+                    last_partial_t = 0.0
 
     def _do_transcribe(self, chunks: list[np.ndarray]) -> None:
         assert self._model is not None
