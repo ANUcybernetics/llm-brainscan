@@ -1,7 +1,11 @@
 import datetime as dt
 from pathlib import Path
 
-from brainscan.rebirth import rotate_audience_log
+import torch
+
+from brainscan.model import GPT
+from brainscan.rebirth import RebirthResult, rebirth, rotate_audience_log
+from conftest import SMALL_CONFIG
 
 
 class TestRotateAudienceLog:
@@ -46,3 +50,95 @@ class TestRotateAudienceLog:
         result = rotate_audience_log(src, target_dir, dt.date(2026, 4, 25))
 
         assert result.read_text() == "new"
+
+
+class TestRebirth:
+    def test_rebirth_resets_weights(self, tmp_path):
+        torch.manual_seed(0)
+        model = GPT(**SMALL_CONFIG)
+        opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
+        x = torch.randint(0, 256, (4, SMALL_CONFIG["sequence_len"]))
+        _, loss = model(x, x)
+        opt.zero_grad()
+        loss.backward()
+        opt.step()
+        before = next(iter(model.parameters())).detach().clone()
+
+        result = rebirth(
+            model=model,
+            seed_corpus=b"abcdef",
+            audience_dir=tmp_path / "audience",
+            persist_days=0,
+            seed=42,
+        )
+        assert isinstance(result, RebirthResult)
+        after = next(iter(model.parameters())).detach().clone()
+        assert not torch.equal(before, after)
+
+    def test_rebirth_returns_corpus(self, tmp_path):
+        model = GPT(**SMALL_CONFIG)
+        result = rebirth(
+            model=model,
+            seed_corpus=b"abcdef",
+            audience_dir=tmp_path / "audience",
+            persist_days=0,
+            seed=42,
+        )
+        assert result.corpus.startswith(b"abcdef")
+
+    def test_rebirth_prepends_recent_logs(self, tmp_path):
+        adir = tmp_path / "audience"
+        adir.mkdir()
+        (adir / "2026-04-23.txt").write_text("oldold")
+        (adir / "2026-04-24.txt").write_text("newer")
+        model = GPT(**SMALL_CONFIG)
+
+        result = rebirth(
+            model=model,
+            seed_corpus=b"SEED",
+            audience_dir=adir,
+            persist_days=2,
+            seed=1,
+        )
+        # most-recent persisted text appears, plus the seed
+        assert b"oldold" in result.corpus
+        assert b"newer" in result.corpus
+        assert b"SEED" in result.corpus
+
+    def test_persist_days_zero_seed_only(self, tmp_path):
+        adir = tmp_path / "audience"
+        adir.mkdir()
+        (adir / "2026-04-23.txt").write_text("ignored")
+        model = GPT(**SMALL_CONFIG)
+
+        result = rebirth(
+            model=model,
+            seed_corpus=b"SEED",
+            audience_dir=adir,
+            persist_days=0,
+            seed=1,
+        )
+        assert b"ignored" not in result.corpus
+        assert result.corpus == b"SEED"
+
+    def test_seed_makes_reproducible(self, tmp_path):
+        m_a = GPT(**SMALL_CONFIG)
+        rebirth(
+            model=m_a,
+            seed_corpus=b"x",
+            audience_dir=tmp_path,
+            persist_days=0,
+            seed=99,
+        )
+        m_b = GPT(**SMALL_CONFIG)
+        rebirth(
+            model=m_b,
+            seed_corpus=b"x",
+            audience_dir=tmp_path,
+            persist_days=0,
+            seed=99,
+        )
+        for p_a, p_b in zip(
+            m_a.parameters(), m_b.parameters(), strict=True
+        ):
+            assert torch.equal(p_a, p_b)
