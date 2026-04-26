@@ -169,3 +169,34 @@ class TestRebirthScheduler:
         import pytest
         with pytest.raises(ValueError):
             RebirthScheduler(at_hh_mm="boom")
+
+
+class TestRebirthSchedulerPersistence:
+    def test_state_path_persists_last_fired_across_instances(self, tmp_path):
+        state_path = tmp_path / "rebirth.last"
+        sched_a = RebirthScheduler(at_hh_mm="06:00", state_path=state_path)
+        first = dt.datetime(2026, 4, 26, 6, 0, 0)
+        assert sched_a.due(first)
+        sched_a.mark_fired(first)
+        # new process: same state path, same day -> not due
+        sched_b = RebirthScheduler(at_hh_mm="06:00", state_path=state_path)
+        assert not sched_b.due(dt.datetime(2026, 4, 26, 6, 0, 1))
+        # next day -> due again
+        assert sched_b.due(dt.datetime(2026, 4, 27, 6, 0, 0))
+
+    def test_no_state_path_falls_back_to_in_memory(self):
+        sched = RebirthScheduler(at_hh_mm="06:00")
+        assert sched.due(dt.datetime(2026, 4, 26, 6, 0, 0))
+
+    def test_state_path_written_on_mark_fired(self, tmp_path):
+        state_path = tmp_path / "rebirth.last"
+        sched = RebirthScheduler(at_hh_mm="06:00", state_path=state_path)
+        sched.mark_fired(dt.datetime(2026, 4, 26, 6, 0, 0))
+        assert state_path.read_text().strip() == "2026-04-26"
+
+    def test_corrupt_state_file_ignored(self, tmp_path):
+        state_path = tmp_path / "rebirth.last"
+        state_path.write_text("not-a-date")
+        sched = RebirthScheduler(at_hh_mm="06:00", state_path=state_path)
+        # should not raise and last_fired_date should be None
+        assert sched.due(dt.datetime(2026, 4, 26, 6, 0, 0))

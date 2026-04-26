@@ -144,6 +144,15 @@ def _process_committed(
         training.append(text)
 
 
+def _decay_pulse(holder: dict, now_t: float, half_life: float = 0.5) -> float:
+    """Decay a pulse holder by elapsed wall-clock time and return the new value."""
+    dt = now_t - holder["last_render_t"]
+    if dt > 0.0:
+        holder["value"] = max(0.0, holder["value"] - dt / half_life)
+    holder["last_render_t"] = now_t
+    return holder["value"]
+
+
 def _caption_state_label(convo: Conversation, step: int, loss: float) -> str:
     if convo.state == ConversationState.LISTENING:
         return "listening..."
@@ -364,8 +373,8 @@ def main() -> None:
         )
 
         partial_holder: dict[str, str] = {"text": ""}
-        partial_pulse_holder: dict[str, float] = {"value": 0.0}
-        commit_pulse_holder: dict[str, float] = {"value": 0.0}
+        partial_pulse_holder: dict[str, float] = {"value": 0.0, "last_render_t": 0.0}
+        commit_pulse_holder: dict[str, float] = {"value": 0.0, "last_render_t": 0.0}
         event_holder: dict[str, object] = {"text": "", "expires_at": 0.0}
 
         def _show_event(text: str, duration: float = 5.0, now: float = 0.0) -> None:
@@ -375,6 +384,7 @@ def main() -> None:
         def on_partial(text: str) -> None:
             partial_holder["text"] = text
             partial_pulse_holder["value"] = 1.0
+            partial_pulse_holder["last_render_t"] = time.time() - t0
 
         def on_speech_end() -> None:
             partial_holder["text"] = ""
@@ -390,7 +400,10 @@ def main() -> None:
         def token_fn(_now: float):
             return next(gen_iter)
 
-        rebirth_sched = RebirthScheduler(at_hh_mm=args.rebirth_at)
+        rebirth_sched = RebirthScheduler(
+            at_hh_mm=args.rebirth_at,
+            state_path=output_dir / "rebirth.last",
+        )
         tts = TTSEngine(enabled=args.speak)
 
         print("\nTraining started (Ctrl+C to stop)...")
@@ -447,14 +460,6 @@ def main() -> None:
                 ):
                     commit_pulse_holder["value"] = 1.0
                 prev_state = convo.state
-
-                # decay pulses
-                commit_pulse_holder["value"] = max(
-                    0.0, commit_pulse_holder["value"] - 0.1
-                )
-                partial_pulse_holder["value"] = max(
-                    0.0, partial_pulse_holder["value"] - 0.1
-                )
 
                 # one optimiser step per loop turn
                 x, y = prepare_batches(
@@ -529,11 +534,13 @@ def main() -> None:
                         cursor_label="",
                         event_line=_current_event_line(now_t, event_holder),
                     )
+                    commit_val = _decay_pulse(commit_pulse_holder, now_t)
+                    partial_val = _decay_pulse(partial_pulse_holder, now_t)
                     audience, model_frame, captions = _build_lane_frames(
                         convo,
                         captions_state,
-                        commit_pulse=commit_pulse_holder["value"],
-                        partial_pulse=partial_pulse_holder["value"],
+                        commit_pulse=commit_val,
+                        partial_pulse=partial_val,
                     )
 
                     if offscreen_renderer is not None:

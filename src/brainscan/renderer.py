@@ -161,13 +161,17 @@ fn model_band(px: u32, py: u32) -> vec4<f32> {
     }
     let scroll_x = px + uniforms.model_offset_px;
     let col = scroll_x / LANE_CELL_W;
-    if col >= uniforms.model_count {
-        return bg;
-    }
+
+    // Caret check FIRST (before count guard so caret_col == count is reachable)
     if uniforms.model_caret_col != 0xFFFFFFFFu && col == uniforms.model_caret_col {
         if (scroll_x % LANE_CELL_W) < 6u {
-            return vec4<f32>(1.0 * 0.85, 0.95 * 0.85, 1.10 * 0.85, 1.0);
+            return vec4<f32>(0.85, 0.81, 0.94, 1.0);
         }
+        return bg;
+    }
+
+    if col >= uniforms.model_count {
+        return bg;
     }
     let glyph = model_chars[col];
     let gx = (scroll_x % LANE_CELL_W) / LANE_SCALE;

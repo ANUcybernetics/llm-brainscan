@@ -15,7 +15,7 @@ import pytest
 from brainscan.conversation import Conversation, ConversationState
 from brainscan.captions import CaptionsState
 from brainscan.renderer import LaneFrame, OffscreenRenderer, _UNIFORM_DTYPE
-from brainscan.train import _build_lane_frames, _current_event_line
+from brainscan.train import _build_lane_frames, _current_event_line, _decay_pulse
 
 
 # ---------------------------------------------------------------------------
@@ -269,3 +269,66 @@ class TestUniformStructSize:
     def test_dtype_size_is_at_least_80_bytes(self):
         # 16 original fields × 4 bytes = 64; 4 new fields × 4 bytes = 16 → 80
         assert _UNIFORM_DTYPE.itemsize >= 80
+
+
+# ---------------------------------------------------------------------------
+# Polish 1 — caret rendering in GPU output
+# ---------------------------------------------------------------------------
+
+class TestCaretRendering:
+    def test_caret_visible_in_model_lane(self):
+        renderer = OffscreenRenderer(64, 64, model_height=64)
+        cap = renderer.config.lane_capacity
+        weights = np.zeros(64 * 64, dtype=np.float32)
+        # no glyphs in the lane; caret at column 1
+        chars = np.zeros(cap, dtype=np.uint32)
+        probs = np.zeros(cap, dtype=np.float32)
+        frame = LaneFrame(chars=chars, attrs_or_probs=probs, count=0, caret_col=1)
+        img = renderer.render(weights, model=frame)
+        # column 1 starts at x=24; leftmost 6px should carry the caret colour
+        caret_region = img[:, 24:30, :3]
+        # caret colour (0.85, 0.81, 0.94) → ~217/207/240 in uint8
+        assert caret_region.max() > 100, (
+            f"caret not visible; max={caret_region.max()}"
+        )
+
+    def test_no_caret_when_col_negative(self):
+        renderer = OffscreenRenderer(64, 64, model_height=64)
+        cap = renderer.config.lane_capacity
+        weights = np.zeros(64 * 64, dtype=np.float32)
+        chars = np.zeros(cap, dtype=np.uint32)
+        probs = np.zeros(cap, dtype=np.float32)
+        frame = LaneFrame(chars=chars, attrs_or_probs=probs, count=0, caret_col=-1)
+        img = renderer.render(weights, model=frame)
+        # model lane occupies all 64 rows (model_height=64); nothing should be bright
+        assert img[:, :, :3].max() < 30, (
+            f"expected dark output without caret; max={img[:, :, :3].max()}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Polish 2 & 3 — time-based pulse decay
+# ---------------------------------------------------------------------------
+
+class TestPulseDecay:
+    def test_pulse_decay_is_time_based(self):
+        holder: dict = {"value": 1.0, "last_render_t": 0.0}
+        # dt=0.1s, half_life=0.5 → decay by 0.1/0.5 = 0.2; expect 0.8
+        v1 = _decay_pulse(holder, now_t=0.1, half_life=0.5)
+        assert abs(v1 - 0.8) < 0.01
+        # additional dt=0.4s → decay by 0.4/0.5 = 0.8 more; expect 0.0 (clamped)
+        v2 = _decay_pulse(holder, now_t=0.5, half_life=0.5)
+        assert abs(v2 - 0.0) < 0.01
+        # stays at 0
+        v3 = _decay_pulse(holder, now_t=1.0, half_life=0.5)
+        assert v3 == 0.0
+
+    def test_pulse_no_decay_at_same_time(self):
+        holder: dict = {"value": 0.6, "last_render_t": 5.0}
+        v = _decay_pulse(holder, now_t=5.0, half_life=0.5)
+        assert v == pytest.approx(0.6)
+
+    def test_pulse_clamps_to_zero(self):
+        holder: dict = {"value": 0.1, "last_render_t": 0.0}
+        v = _decay_pulse(holder, now_t=10.0, half_life=0.5)
+        assert v == 0.0
