@@ -125,6 +125,17 @@ def _build_lane_frames(
     return audience, model, captions
 
 
+def _current_event_line(
+    now: float, event_holder: dict[str, object]
+) -> str:
+    """Return the event line if it has not yet expired, else clear and return ''."""
+    expires = float(event_holder["expires_at"])  # type: ignore[arg-type]
+    if now >= expires:
+        event_holder["text"] = ""
+        return ""
+    return str(event_holder["text"])
+
+
 def _process_committed(
     listener: ListenerSnapshot, training: TextBuffer
 ) -> None:
@@ -361,13 +372,6 @@ def main() -> None:
             event_holder["text"] = text
             event_holder["expires_at"] = now + duration
 
-        def _current_event_line(now: float) -> str:
-            expires = float(event_holder["expires_at"])  # type: ignore[arg-type]
-            if now >= expires:
-                event_holder["text"] = ""
-                return ""
-            return str(event_holder["text"])
-
         def on_partial(text: str) -> None:
             partial_holder["text"] = text
             partial_pulse_holder["value"] = 1.0
@@ -523,7 +527,7 @@ def main() -> None:
                     captions_state = CaptionsState(
                         state_label=_caption_state_label(convo, step, loss.item()),
                         cursor_label="",
-                        event_line=_current_event_line(now_t),
+                        event_line=_current_event_line(now_t, event_holder),
                     )
                     audience, model_frame, captions = _build_lane_frames(
                         convo,
