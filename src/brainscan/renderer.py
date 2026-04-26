@@ -23,6 +23,9 @@ import wgpu
 SHADER_SOURCE = """
 const ATTR_PARTIAL: u32 = 1u;
 const ATTR_SOURCE_TAG: u32 = 2u;
+const LANE_SCALE: u32 = 3u;
+const LANE_CELL_W: u32 = 24u;
+const LANE_CELL_H: u32 = 48u;
 
 struct Uniforms {
     width: u32,
@@ -105,22 +108,21 @@ fn audience_band(px: u32, py: u32) -> vec4<f32> {
         return vec4<f32>(-1.0, 0.0, 0.0, 1.0);
     }
     let lane_py = py - uniforms.audience_y;
-    let cell_w = 24u;
-    let cell_h = 48u;
-    let scroll_x = px + uniforms.audience_offset_px;
-    let col = scroll_x / cell_w;
-    let row = lane_py / cell_h;
-    let cols = uniforms.width / cell_w;
-    let char_pos = row * cols + col;
+    let glyph_top = (uniforms.audience_height - LANE_CELL_H) / 2u;
     let bg = vec4<f32>(0.04, 0.04, 0.06, 1.0);
-    if char_pos >= uniforms.audience_count {
+    if lane_py < glyph_top || lane_py >= glyph_top + LANE_CELL_H {
         return bg;
     }
-    let glyph = audience_chars[char_pos];
-    let gx = (scroll_x % cell_w) / 3u;
-    let gy = (lane_py % cell_h) / 3u;
+    let scroll_x = px + uniforms.audience_offset_px;
+    let col = scroll_x / LANE_CELL_W;
+    if col >= uniforms.audience_count {
+        return bg;
+    }
+    let glyph = audience_chars[col];
+    let gx = (scroll_x % LANE_CELL_W) / LANE_SCALE;
+    let gy = (lane_py - glyph_top) / LANE_SCALE;
     if font_pixel(glyph, gx, gy) {
-        let attrs = audience_attrs[char_pos];
+        let attrs = audience_attrs[col];
         var c: vec3<f32>;
         if (attrs & ATTR_PARTIAL) != 0u {
             c = vec3<f32>(0.50, 0.46, 0.38);
@@ -139,22 +141,21 @@ fn model_band(px: u32, py: u32) -> vec4<f32> {
         return vec4<f32>(-1.0, 0.0, 0.0, 1.0);
     }
     let lane_py = py - uniforms.model_y;
-    let cell_w = 24u;
-    let cell_h = 48u;
-    let scroll_x = px + uniforms.model_offset_px;
-    let col = scroll_x / cell_w;
-    let row = lane_py / cell_h;
-    let cols = uniforms.width / cell_w;
-    let char_pos = row * cols + col;
+    let glyph_top = (uniforms.model_height - LANE_CELL_H) / 2u;
     let bg = vec4<f32>(0.02, 0.02, 0.04, 1.0);
-    if char_pos >= uniforms.model_count {
+    if lane_py < glyph_top || lane_py >= glyph_top + LANE_CELL_H {
         return bg;
     }
-    let glyph = model_chars[char_pos];
-    let gx = (scroll_x % cell_w) / 3u;
-    let gy = (lane_py % cell_h) / 3u;
+    let scroll_x = px + uniforms.model_offset_px;
+    let col = scroll_x / LANE_CELL_W;
+    if col >= uniforms.model_count {
+        return bg;
+    }
+    let glyph = model_chars[col];
+    let gx = (scroll_x % LANE_CELL_W) / LANE_SCALE;
+    let gy = (lane_py - glyph_top) / LANE_SCALE;
     if font_pixel(glyph, gx, gy) {
-        let prob = model_probs[char_pos];
+        let prob = model_probs[col];
         let brightness = 0.25 + prob * 0.75;
         return vec4<f32>(brightness, brightness * 0.95, brightness * 1.10, 1.0);
     }
@@ -284,9 +285,7 @@ class RenderConfig:
 
     @property
     def lane_capacity(self) -> int:
-        cols = self.width // LANE_GLYPH_W
-        rows = self.audience_height // LANE_GLYPH_H
-        return max(cols * rows, 1)
+        return max(1, self.width // LANE_GLYPH_W)
 
     @property
     def captions_capacity(self) -> int:

@@ -29,6 +29,7 @@ from brainscan.layout import (
 )
 from brainscan.model import GPT
 from brainscan.renderer import (
+    LaneFrame,
     LiveRenderer,
     OffscreenRenderer,
     flatten_weights,
@@ -102,7 +103,6 @@ def render_frame(
         n = min(len(chars), cap)
         padded_chars[:n] = chars[:n]
         padded_probs[:n] = probs[:n]
-        from brainscan.renderer import LaneFrame
         model_frame = LaneFrame(
             chars=padded_chars, attrs_or_probs=padded_probs, count=n
         )
@@ -349,7 +349,6 @@ def main() -> None:
                         )
                         live_model_frame = None
                         if chars is not None and probs is not None:
-                            from brainscan.renderer import LaneFrame
                             cap = live_renderer.config.lane_capacity
                             padded_chars = np.zeros(cap, dtype=np.uint32)
                             padded_probs = np.zeros(cap, dtype=np.float32)
