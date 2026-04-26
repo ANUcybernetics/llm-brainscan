@@ -25,6 +25,15 @@ class TextBuffer:
                 with open(self._persist_path, "ab") as f:
                     f.write(encoded)
 
+    def rotate(self, target: Path) -> None:
+        if self._persist_path is None:
+            raise ValueError("TextBuffer has no persist path to rotate")
+        with self._lock:
+            if not self._persist_path.exists():
+                return
+            target.parent.mkdir(parents=True, exist_ok=True)
+            self._persist_path.replace(target)
+
     def __len__(self) -> int:
         with self._lock:
             return len(self._buf)

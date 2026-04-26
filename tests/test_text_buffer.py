@@ -1,3 +1,6 @@
+from pathlib import Path
+
+import pytest
 import torch
 
 from brainscan.data import TextBuffer, prepare_batches
@@ -75,3 +78,51 @@ class TestPrepareBatchesWithTextBuffer:
         unique_vals = set(x.flatten().tolist())
         assert 0 in unique_vals
         assert 195 in unique_vals or 191 in unique_vals or 255 in unique_vals
+
+
+class TestTextBufferRotate:
+    def test_rotate_moves_persist_file(self, tmp_path):
+        path = tmp_path / "audience.txt"
+        target = tmp_path / "rotated" / "2026-04-25.txt"
+        buf = TextBuffer(b"base", persist_path=path)
+        buf.append(" hello")
+
+        buf.rotate(target)
+
+        assert target.read_bytes() == b" hello"
+        assert not path.exists()
+
+    def test_rotate_creates_target_parent(self, tmp_path):
+        path = tmp_path / "audience.txt"
+        target = tmp_path / "deep" / "nested" / "out.txt"
+        buf = TextBuffer(b"base", persist_path=path)
+        buf.append("x")
+
+        buf.rotate(target)
+
+        assert target.parent.is_dir()
+        assert target.read_bytes() == b"x"
+
+    def test_rotate_no_persist_path_raises(self):
+        buf = TextBuffer(b"hello")
+        with pytest.raises(ValueError):
+            buf.rotate(Path("/tmp/whatever.txt"))
+
+    def test_rotate_missing_source_is_noop(self, tmp_path):
+        path = tmp_path / "audience.txt"
+        target = tmp_path / "rotated.txt"
+        buf = TextBuffer(b"base", persist_path=path)
+
+        buf.rotate(target)
+
+        assert not target.exists()
+
+    def test_rotate_leaves_in_memory_buffer(self, tmp_path):
+        path = tmp_path / "audience.txt"
+        target = tmp_path / "rotated.txt"
+        buf = TextBuffer(b"base", persist_path=path)
+        buf.append(" tail")
+
+        buf.rotate(target)
+
+        assert buf.data == b"base tail"
