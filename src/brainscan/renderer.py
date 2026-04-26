@@ -445,34 +445,73 @@ def create_render_pipeline(
     )
 
 
+@dataclass
+class LaneFrame:
+    chars: np.ndarray
+    attrs_or_probs: np.ndarray
+    count: int
+
+
+@dataclass
+class CaptionsFrame:
+    chars: np.ndarray
+    count: int
+
+
 def draw(
     res: RenderResources,
     target_view: wgpu.GPUTextureView,
     flat_weights: np.ndarray,
-    text_chars: np.ndarray | None = None,
-    text_probs: np.ndarray | None = None,
+    audience: LaneFrame | None = None,
+    model: LaneFrame | None = None,
+    captions: CaptionsFrame | None = None,
 ) -> None:
     device = res.device
     param_count = len(flat_weights)
 
-    text_count = 0
-    if text_chars is not None and text_probs is not None:
-        text_count = min(len(text_chars), res.config.max_text)
+    audience_count = 0
+    if audience is not None:
+        audience_count = audience.count
         device.queue.write_buffer(
-            res.text_chars_buffer,
+            res.audience_chars_buffer,
             0,
-            text_chars[:text_count].astype(np.uint32).tobytes(),
+            audience.chars.astype(np.uint32).tobytes(),
         )
         device.queue.write_buffer(
-            res.text_probs_buffer,
+            res.audience_attrs_buffer,
             0,
-            text_probs[:text_count].astype(np.float32).tobytes(),
+            audience.attrs_or_probs.astype(np.float32).tobytes(),
+        )
+
+    model_count = 0
+    if model is not None:
+        model_count = model.count
+        device.queue.write_buffer(
+            res.model_chars_buffer,
+            0,
+            model.chars.astype(np.uint32).tobytes(),
+        )
+        device.queue.write_buffer(
+            res.model_probs_buffer,
+            0,
+            model.attrs_or_probs.astype(np.float32).tobytes(),
+        )
+
+    captions_count = 0
+    if captions is not None:
+        captions_count = captions.count
+        device.queue.write_buffer(
+            res.captions_chars_buffer,
+            0,
+            captions.chars.astype(np.uint32).tobytes(),
         )
 
     vmax = float(np.max(np.abs(flat_weights))) if param_count > 0 else 0.0
     res.uniform_data["param_count"] = param_count
     res.uniform_data["colormap"] = res.config.colormap
-    res.uniform_data["text_count"] = text_count
+    res.uniform_data["audience_count"] = audience_count
+    res.uniform_data["model_count"] = model_count
+    res.uniform_data["captions_count"] = captions_count
     res.uniform_data["vmax"] = vmax
     device.queue.write_buffer(
         res.uniform_buffer, 0, res.uniform_data.tobytes()
@@ -510,22 +549,21 @@ class OffscreenRenderer:
         height: int,
         device: wgpu.GPUDevice | None = None,
         colormap: int = COLORMAP_DIVERGING,
-        text_strip_height: int = 0,
-        text_scale: int = TEXT_SCALE_DEFAULT,
+        audience_height: int = 90,
+        model_height: int = 90,
+        captions_height: int = 12,
     ):
         self.width = width
         self.height = height
         self.colormap = colormap
-        self.text_strip_height = text_strip_height
-        self.text_scale = text_scale
         self.device = device or get_device()
 
-        self._config = RenderConfig(width, height, colormap, text_strip_height, text_scale)
-        self._res = create_render_pipeline(
-            self._config, self.device, wgpu.TextureFormat.rgba8unorm
+        self.config = RenderConfig(
+            width, height, colormap, audience_height, model_height, captions_height
         )
-        self.text_y = self._config.text_y
-        self.text_cols = self._config.text_cols
+        self._res = create_render_pipeline(
+            self.config, self.device, wgpu.TextureFormat.rgba8unorm
+        )
 
         self._target_texture = self.device.create_texture(
             size=(width, height, 1),
@@ -536,12 +574,13 @@ class OffscreenRenderer:
     def render(
         self,
         flat_weights: np.ndarray,
-        text_chars: np.ndarray | None = None,
-        text_probs: np.ndarray | None = None,
+        audience: LaneFrame | None = None,
+        model: LaneFrame | None = None,
+        captions: CaptionsFrame | None = None,
     ) -> np.ndarray:
         """Render weight data and return RGBA image as numpy array."""
         target_view = self._target_texture.create_view()
-        draw(self._res, target_view, flat_weights, text_chars, text_probs)
+        draw(self._res, target_view, flat_weights, audience, model, captions)
 
         data = self.device.queue.read_texture(
             {"texture": self._target_texture, "mip_level": 0, "origin": (0, 0, 0)},
@@ -568,8 +607,9 @@ class LiveRenderer:
         *,
         device: wgpu.GPUDevice | None = None,
         colormap: int = COLORMAP_DIVERGING,
-        text_strip_height: int = 0,
-        text_scale: int = TEXT_SCALE_DEFAULT,
+        audience_height: int = 90,
+        model_height: int = 90,
+        captions_height: int = 12,
         fullscreen: bool = True,
         max_fps: int = 30,
         canvas: object | None = None,
@@ -596,17 +636,18 @@ class LiveRenderer:
         surface_format = _pick_surface_format(self._context, self.device)
         self._context.configure(device=self.device, format=surface_format)
 
-        self._config = RenderConfig(width, height, colormap, text_strip_height, text_scale)
-        self._res = create_render_pipeline(
-            self._config, self.device, surface_format
+        self.config = RenderConfig(
+            width, height, colormap, audience_height, model_height, captions_height
         )
-        self.text_y = self._config.text_y
-        self.text_cols = self._config.text_cols
+        self._res = create_render_pipeline(
+            self.config, self.device, surface_format
+        )
 
         self._lock = threading.Lock()
         self._flat_weights: np.ndarray | None = None
-        self._text_chars: np.ndarray | None = None
-        self._text_probs: np.ndarray | None = None
+        self._audience: LaneFrame | None = None
+        self._model: LaneFrame | None = None
+        self._captions: CaptionsFrame | None = None
 
         if fullscreen:
             self._go_fullscreen()
@@ -616,34 +657,29 @@ class LiveRenderer:
     def update(
         self,
         flat_weights: np.ndarray,
-        text_chars: np.ndarray | None = None,
-        text_probs: np.ndarray | None = None,
+        audience: LaneFrame | None = None,
+        model: LaneFrame | None = None,
+        captions: CaptionsFrame | None = None,
     ) -> None:
-        """Thread-safe update of weight and text data for the next frame."""
+        """Thread-safe update of weight and lane data for the next frame."""
         with self._lock:
             self._flat_weights = flat_weights.astype(np.float32, copy=True)
-            self._text_chars = (
-                text_chars.astype(np.uint32, copy=True)
-                if text_chars is not None
-                else None
-            )
-            self._text_probs = (
-                text_probs.astype(np.float32, copy=True)
-                if text_probs is not None
-                else None
-            )
+            self._audience = audience
+            self._model = model
+            self._captions = captions
 
     def _draw(self) -> None:
         with self._lock:
             weights = self._flat_weights
-            chars = self._text_chars
-            probs = self._text_probs
+            audience = self._audience
+            model = self._model
+            captions = self._captions
 
         if weights is None:
             return
 
         texture = self._context.get_current_texture()
-        draw(self._res, texture.create_view(), weights, chars, probs)
+        draw(self._res, texture.create_view(), weights, audience, model, captions)
 
     def _go_fullscreen(self) -> None:
         try:
