@@ -116,6 +116,18 @@ class TestTextBufferRotate:
         buf.rotate(target)
 
         assert not target.exists()
+        assert not path.exists()
+
+    def test_rotate_includes_pre_existing_persist_bytes(self, tmp_path):
+        path = tmp_path / "audience.txt"
+        path.write_bytes(b"old ")
+        target = tmp_path / "rotated.txt"
+        buf = TextBuffer(b"base", persist_path=path)
+        buf.append("new")
+
+        buf.rotate(target)
+
+        assert target.read_bytes() == b"old new"
 
     def test_rotate_leaves_in_memory_buffer(self, tmp_path):
         path = tmp_path / "audience.txt"
