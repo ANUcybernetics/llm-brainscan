@@ -26,18 +26,26 @@ struct Uniforms {
     height: u32,
     param_count: u32,
     colormap: u32,
-    text_y: u32,
-    text_scale: u32,
-    text_cols: u32,
-    text_count: u32,
+    audience_y: u32,
+    audience_height: u32,
+    model_y: u32,
+    model_height: u32,
+    captions_y: u32,
+    captions_height: u32,
+    audience_count: u32,
+    model_count: u32,
+    captions_count: u32,
     vmax: f32,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
 @group(0) @binding(1) var<storage, read> weights: array<f32>;
 @group(0) @binding(2) var<storage, read> font_data: array<u32>;
-@group(0) @binding(3) var<storage, read> text_chars: array<u32>;
-@group(0) @binding(4) var<storage, read> text_probs: array<f32>;
+@group(0) @binding(3) var<storage, read> audience_chars: array<u32>;
+@group(0) @binding(4) var<storage, read> audience_attrs: array<f32>;
+@group(0) @binding(5) var<storage, read> model_chars: array<u32>;
+@group(0) @binding(6) var<storage, read> model_probs: array<f32>;
+@group(0) @binding(7) var<storage, read> captions_chars: array<u32>;
 
 struct VertexOutput {
     @builtin(position) pos: vec4<f32>,
@@ -46,7 +54,6 @@ struct VertexOutput {
 
 @vertex
 fn vs_main(@builtin(vertex_index) idx: u32) -> VertexOutput {
-    // Fullscreen triangle (oversized, clipped to screen)
     var positions = array<vec2<f32>, 3>(
         vec2<f32>(-1.0, -1.0),
         vec2<f32>(3.0, -1.0),
@@ -64,7 +71,6 @@ fn vs_main(@builtin(vertex_index) idx: u32) -> VertexOutput {
 }
 
 fn diverging(v: f32) -> vec3<f32> {
-    // Blue (negative) -> grey (zero) -> red (positive)
     let t = clamp(v, -1.0, 1.0);
     let r = clamp(0.5 + t * 0.5, 0.0, 1.0);
     let g = clamp(0.5 - abs(t) * 0.4, 0.0, 1.0);
@@ -73,7 +79,6 @@ fn diverging(v: f32) -> vec3<f32> {
 }
 
 fn thermal(v: f32) -> vec3<f32> {
-    // Black -> blue -> red -> yellow -> white
     let t = clamp((v + 1.0) * 0.5, 0.0, 1.0);
     let r = clamp(t * 3.0 - 1.0, 0.0, 1.0);
     let g = clamp(t * 3.0 - 2.0, 0.0, 1.0);
@@ -90,45 +95,106 @@ fn font_pixel(char_idx: u32, gx: u32, gy: u32) -> bool {
     return (byte_val & (0x80u >> gx)) != 0u;
 }
 
+fn audience_band(px: u32, py: u32) -> vec4<f32> {
+    if py < uniforms.audience_y || py >= uniforms.audience_y + uniforms.audience_height {
+        return vec4<f32>(-1.0, 0.0, 0.0, 1.0);
+    }
+    let lane_py = py - uniforms.audience_y;
+    let cell_w = 24u;
+    let cell_h = 48u;
+    let col = px / cell_w;
+    let row = lane_py / cell_h;
+    let cols = uniforms.width / cell_w;
+    let char_pos = row * cols + col;
+    let bg = vec4<f32>(0.04, 0.04, 0.06, 1.0);
+    if char_pos >= uniforms.audience_count {
+        return bg;
+    }
+    let glyph = audience_chars[char_pos];
+    let gx = (px % cell_w) / 3u;
+    let gy = (lane_py % cell_h) / 3u;
+    if font_pixel(glyph, gx, gy) {
+        let attr = audience_attrs[char_pos];
+        let c = vec3<f32>(0.94, 0.88, 0.72) * attr;
+        return vec4<f32>(c, 1.0);
+    }
+    return bg;
+}
+
+fn model_band(px: u32, py: u32) -> vec4<f32> {
+    if py < uniforms.model_y || py >= uniforms.model_y + uniforms.model_height {
+        return vec4<f32>(-1.0, 0.0, 0.0, 1.0);
+    }
+    let lane_py = py - uniforms.model_y;
+    let cell_w = 24u;
+    let cell_h = 48u;
+    let col = px / cell_w;
+    let row = lane_py / cell_h;
+    let cols = uniforms.width / cell_w;
+    let char_pos = row * cols + col;
+    let bg = vec4<f32>(0.02, 0.02, 0.04, 1.0);
+    if char_pos >= uniforms.model_count {
+        return bg;
+    }
+    let glyph = model_chars[char_pos];
+    let gx = (px % cell_w) / 3u;
+    let gy = (lane_py % cell_h) / 3u;
+    if font_pixel(glyph, gx, gy) {
+        let prob = model_probs[char_pos];
+        let brightness = 0.25 + prob * 0.75;
+        return vec4<f32>(brightness, brightness * 0.95, brightness * 1.10, 1.0);
+    }
+    return bg;
+}
+
+fn captions_band(px: u32, py: u32) -> vec4<f32> {
+    if py < uniforms.captions_y || py >= uniforms.captions_y + uniforms.captions_height {
+        return vec4<f32>(-1.0, 0.0, 0.0, 1.0);
+    }
+    let cap_py = py - uniforms.captions_y;
+    let cell_w = 8u;
+    let cell_h = 16u;
+    let col = px / cell_w;
+    let row = cap_py / cell_h;
+    let cols = uniforms.width / cell_w;
+    let char_pos = row * cols + col;
+    let bg = vec4<f32>(0.01, 0.01, 0.01, 1.0);
+    if char_pos >= uniforms.captions_count {
+        return bg;
+    }
+    let glyph = captions_chars[char_pos];
+    let gx = px % cell_w;
+    let gy = cap_py % cell_h;
+    if font_pixel(glyph, gx, gy) {
+        return vec4<f32>(0.40, 0.40, 0.42, 1.0);
+    }
+    return bg;
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let px = u32(in.uv.x * f32(uniforms.width));
     let py = u32(in.uv.y * f32(uniforms.height));
 
-    if uniforms.text_y > 0u && py >= uniforms.text_y {
-        let text_py = py - uniforms.text_y;
-        let scale = uniforms.text_scale;
-        let cell_w = 8u * scale;
-        let cell_h = 16u * scale;
-        let col = px / cell_w;
-        let row = text_py / cell_h;
-        let char_pos = row * uniforms.text_cols + col;
+    let cap_a = audience_band(px, py);
+    if cap_a.x >= 0.0 {
+        return cap_a;
+    }
 
-        if char_pos < uniforms.text_count {
-            let glyph = text_chars[char_pos];
-            let gx = (px % cell_w) / scale;
-            let gy = (text_py % cell_h) / scale;
+    let cap_m = model_band(px, py);
+    if cap_m.x >= 0.0 {
+        return cap_m;
+    }
 
-            if font_pixel(glyph, gx, gy) {
-                let prob = text_probs[char_pos];
-                let brightness = 0.25 + prob * 0.75;
-                return vec4<f32>(
-                    brightness,
-                    brightness * 0.95,
-                    brightness * 0.85,
-                    1.0,
-                );
-            }
-        }
-        return vec4<f32>(0.02, 0.02, 0.02, 1.0);
+    let cap_c = captions_band(px, py);
+    if cap_c.x >= 0.0 {
+        return cap_c;
     }
 
     let idx = py * uniforms.width + px;
-
     if idx >= uniforms.param_count {
         return vec4<f32>(0.05, 0.05, 0.05, 1.0);
     }
-
     let raw = weights[idx];
     let w = select(raw / uniforms.vmax, 0.0, uniforms.vmax < 1e-10);
     var color: vec3<f32>;
