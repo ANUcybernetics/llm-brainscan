@@ -4,7 +4,7 @@ from pathlib import Path
 import torch
 
 from brainscan.model import GPT
-from brainscan.rebirth import RebirthResult, rebirth, rotate_audience_log
+from brainscan.rebirth import RebirthResult, RebirthScheduler, rebirth, rotate_audience_log
 from conftest import SMALL_CONFIG
 
 
@@ -142,3 +142,30 @@ class TestRebirth:
             m_a.parameters(), m_b.parameters(), strict=True
         ):
             assert torch.equal(p_a, p_b)
+
+
+class TestRebirthScheduler:
+    def test_due_when_clock_passes_target(self):
+        sched = RebirthScheduler(at_hh_mm="06:00")
+        # before 06:00 today
+        before = dt.datetime(2026, 4, 26, 5, 59, 59)
+        assert not sched.due(before)
+        # at 06:00 today (not yet armed)
+        first = dt.datetime(2026, 4, 26, 6, 0, 0)
+        assert sched.due(first)
+        sched.mark_fired(first)
+        # not due immediately afterwards
+        assert not sched.due(dt.datetime(2026, 4, 26, 6, 0, 1))
+        # not due later that day
+        assert not sched.due(dt.datetime(2026, 4, 26, 23, 59, 0))
+        # due again the next day
+        assert sched.due(dt.datetime(2026, 4, 27, 6, 0, 0))
+
+    def test_disabled_never_due(self):
+        sched = RebirthScheduler(at_hh_mm=None)
+        assert not sched.due(dt.datetime(2026, 4, 26, 6, 0, 0))
+
+    def test_invalid_format_raises(self):
+        import pytest
+        with pytest.raises(ValueError):
+            RebirthScheduler(at_hh_mm="boom")
