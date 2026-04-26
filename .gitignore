@@ -13,3 +13,4 @@ data/
 .envrc
 *.pem
 *.key
+.worktrees/
