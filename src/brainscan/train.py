@@ -473,7 +473,7 @@ def main() -> None:
                         rebirth_state = {"phase": "fading_out", "started_at": now_t}
                         global_brightness = 1.0
                 elif rebirth_phase == "fading_out":
-                    elapsed = now_t - float(rebirth_state["started_at"])  # type: ignore[arg-type]
+                    elapsed = now_t - float(rebirth_state["started_at"])
                     global_brightness = max(0.0, 1.0 - elapsed / 2.0)
                     if elapsed >= 2.0:
                         now_dt = dt.datetime.now()
@@ -505,7 +505,7 @@ def main() -> None:
                         _show_event(f"dawn {now_dt.strftime('%H:%M')}", now=now_t)
                         rebirth_state = {"phase": "fading_in", "started_at": now_t}
                 elif rebirth_phase == "fading_in":
-                    elapsed = now_t - float(rebirth_state["started_at"])  # type: ignore[arg-type]
+                    elapsed = now_t - float(rebirth_state["started_at"])
                     global_brightness = min(1.0, elapsed / 2.0)
                     if elapsed >= 2.0:
                         global_brightness = 1.0
