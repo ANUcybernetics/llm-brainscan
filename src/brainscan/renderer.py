@@ -21,6 +21,9 @@ import numpy as np
 import wgpu
 
 SHADER_SOURCE = """
+const ATTR_PARTIAL: u32 = 1u;
+const ATTR_SOURCE_TAG: u32 = 2u;
+
 struct Uniforms {
     width: u32,
     height: u32,
@@ -28,12 +31,14 @@ struct Uniforms {
     colormap: u32,
     audience_y: u32,
     audience_height: u32,
+    audience_count: u32,
+    audience_offset_px: u32,
     model_y: u32,
     model_height: u32,
+    model_count: u32,
+    model_offset_px: u32,
     captions_y: u32,
     captions_height: u32,
-    audience_count: u32,
-    model_count: u32,
     captions_count: u32,
     vmax: f32,
 };
@@ -42,7 +47,7 @@ struct Uniforms {
 @group(0) @binding(1) var<storage, read> weights: array<f32>;
 @group(0) @binding(2) var<storage, read> font_data: array<u32>;
 @group(0) @binding(3) var<storage, read> audience_chars: array<u32>;
-@group(0) @binding(4) var<storage, read> audience_attrs: array<f32>;
+@group(0) @binding(4) var<storage, read> audience_attrs: array<u32>;
 @group(0) @binding(5) var<storage, read> model_chars: array<u32>;
 @group(0) @binding(6) var<storage, read> model_probs: array<f32>;
 @group(0) @binding(7) var<storage, read> captions_chars: array<u32>;
@@ -102,7 +107,8 @@ fn audience_band(px: u32, py: u32) -> vec4<f32> {
     let lane_py = py - uniforms.audience_y;
     let cell_w = 24u;
     let cell_h = 48u;
-    let col = px / cell_w;
+    let scroll_x = px + uniforms.audience_offset_px;
+    let col = scroll_x / cell_w;
     let row = lane_py / cell_h;
     let cols = uniforms.width / cell_w;
     let char_pos = row * cols + col;
@@ -111,11 +117,18 @@ fn audience_band(px: u32, py: u32) -> vec4<f32> {
         return bg;
     }
     let glyph = audience_chars[char_pos];
-    let gx = (px % cell_w) / 3u;
+    let gx = (scroll_x % cell_w) / 3u;
     let gy = (lane_py % cell_h) / 3u;
     if font_pixel(glyph, gx, gy) {
-        let attr = audience_attrs[char_pos];
-        let c = vec3<f32>(0.94, 0.88, 0.72) * attr;
+        let attrs = audience_attrs[char_pos];
+        var c: vec3<f32>;
+        if (attrs & ATTR_PARTIAL) != 0u {
+            c = vec3<f32>(0.50, 0.46, 0.38);
+        } else if (attrs & ATTR_SOURCE_TAG) != 0u {
+            c = vec3<f32>(0.62, 0.56, 0.42);
+        } else {
+            c = vec3<f32>(0.94, 0.88, 0.72);
+        }
         return vec4<f32>(c, 1.0);
     }
     return bg;
@@ -128,7 +141,8 @@ fn model_band(px: u32, py: u32) -> vec4<f32> {
     let lane_py = py - uniforms.model_y;
     let cell_w = 24u;
     let cell_h = 48u;
-    let col = px / cell_w;
+    let scroll_x = px + uniforms.model_offset_px;
+    let col = scroll_x / cell_w;
     let row = lane_py / cell_h;
     let cols = uniforms.width / cell_w;
     let char_pos = row * cols + col;
@@ -137,7 +151,7 @@ fn model_band(px: u32, py: u32) -> vec4<f32> {
         return bg;
     }
     let glyph = model_chars[char_pos];
-    let gx = (px % cell_w) / 3u;
+    let gx = (scroll_x % cell_w) / 3u;
     let gy = (lane_py % cell_h) / 3u;
     if font_pixel(glyph, gx, gy) {
         let prob = model_probs[char_pos];
@@ -222,12 +236,14 @@ _UNIFORM_DTYPE = np.dtype([
     ("colormap", np.uint32),
     ("audience_y", np.uint32),
     ("audience_height", np.uint32),
+    ("audience_count", np.uint32),
+    ("audience_offset_px", np.uint32),
     ("model_y", np.uint32),
     ("model_height", np.uint32),
+    ("model_count", np.uint32),
+    ("model_offset_px", np.uint32),
     ("captions_y", np.uint32),
     ("captions_height", np.uint32),
-    ("audience_count", np.uint32),
-    ("model_count", np.uint32),
     ("captions_count", np.uint32),
     ("vmax", np.float32),
 ])
@@ -246,22 +262,25 @@ class RenderConfig:
     width: int
     height: int
     colormap: int = COLORMAP_DIVERGING
-    audience_height: int = 90
-    model_height: int = 90
-    captions_height: int = 12
-
-    @property
-    def audience_y(self) -> int:
-        strip_total = self.audience_height + self.model_height + self.captions_height
-        return max(0, self.height - strip_total)
-
-    @property
-    def model_y(self) -> int:
-        return self.audience_y + self.audience_height
+    audience_height: int = 0
+    model_height: int = 0
+    captions_height: int = 0
 
     @property
     def captions_y(self) -> int:
-        return self.model_y + self.model_height
+        return self.height - self.captions_height if self.captions_height > 0 else 0
+
+    @property
+    def model_y(self) -> int:
+        if self.model_height == 0:
+            return 0
+        return self.height - self.captions_height - self.model_height
+
+    @property
+    def audience_y(self) -> int:
+        if self.audience_height == 0:
+            return 0
+        return max(0, self.height - self.captions_height - self.model_height - self.audience_height)
 
     @property
     def lane_capacity(self) -> int:
@@ -450,6 +469,7 @@ class LaneFrame:
     chars: np.ndarray
     attrs_or_probs: np.ndarray
     count: int
+    offset_px: int = 0
 
 
 @dataclass
@@ -470,8 +490,10 @@ def draw(
     param_count = len(flat_weights)
 
     audience_count = 0
+    audience_offset_px = 0
     if audience is not None:
         audience_count = audience.count
+        audience_offset_px = audience.offset_px
         device.queue.write_buffer(
             res.audience_chars_buffer,
             0,
@@ -480,12 +502,14 @@ def draw(
         device.queue.write_buffer(
             res.audience_attrs_buffer,
             0,
-            audience.attrs_or_probs.astype(np.float32).tobytes(),
+            audience.attrs_or_probs.astype(np.uint32).tobytes(),
         )
 
     model_count = 0
+    model_offset_px = 0
     if model is not None:
         model_count = model.count
+        model_offset_px = model.offset_px
         device.queue.write_buffer(
             res.model_chars_buffer,
             0,
@@ -510,7 +534,9 @@ def draw(
     res.uniform_data["param_count"] = param_count
     res.uniform_data["colormap"] = res.config.colormap
     res.uniform_data["audience_count"] = audience_count
+    res.uniform_data["audience_offset_px"] = audience_offset_px
     res.uniform_data["model_count"] = model_count
+    res.uniform_data["model_offset_px"] = model_offset_px
     res.uniform_data["captions_count"] = captions_count
     res.uniform_data["vmax"] = vmax
     device.queue.write_buffer(
@@ -549,9 +575,9 @@ class OffscreenRenderer:
         height: int,
         device: wgpu.GPUDevice | None = None,
         colormap: int = COLORMAP_DIVERGING,
-        audience_height: int = 90,
-        model_height: int = 90,
-        captions_height: int = 12,
+        audience_height: int = 0,
+        model_height: int = 0,
+        captions_height: int = 0,
     ):
         self.width = width
         self.height = height
@@ -607,9 +633,9 @@ class LiveRenderer:
         *,
         device: wgpu.GPUDevice | None = None,
         colormap: int = COLORMAP_DIVERGING,
-        audience_height: int = 90,
-        model_height: int = 90,
-        captions_height: int = 12,
+        audience_height: int = 0,
+        model_height: int = 0,
+        captions_height: int = 0,
         fullscreen: bool = True,
         max_fps: int = 30,
         canvas: object | None = None,

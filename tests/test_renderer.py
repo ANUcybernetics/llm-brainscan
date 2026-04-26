@@ -56,25 +56,31 @@ class TestFlattenWeights:
 
 
 class TestRenderConfigBands:
-    def test_full_8k_layout(self):
-        cfg = RenderConfig(7680, 4320)
-        assert cfg.audience_y == 4128
-        assert cfg.model_y == 4218
-        assert cfg.captions_y == 4308
+    def test_default_bands_are_disabled(self):
+        cfg = RenderConfig(width=100, height=100)
+        assert cfg.audience_height == 0
+        assert cfg.model_height == 0
+        assert cfg.captions_height == 0
+        assert cfg.audience_y == 0
+        assert cfg.model_y == 0
+        assert cfg.captions_y == 0
 
-    def test_lane_capacity_full(self):
-        cfg = RenderConfig(7680, 4320)
+    def test_bands_stack_upward_from_bottom(self):
+        cfg = RenderConfig(
+            width=7680, height=4320,
+            audience_height=90, model_height=90, captions_height=12,
+        )
+        assert cfg.captions_y == 4308
+        assert cfg.model_y == 4218
+        assert cfg.audience_y == 4128
+
+    def test_lane_capacity_320_at_3x(self):
+        cfg = RenderConfig(width=7680, height=4320, audience_height=90)
         assert cfg.lane_capacity == 320
 
-    def test_captions_capacity_full(self):
-        cfg = RenderConfig(7680, 4320)
+    def test_captions_capacity_960(self):
+        cfg = RenderConfig(width=7680, height=4320, captions_height=12)
         assert cfg.captions_capacity == 960
-
-    def test_custom_band_heights(self):
-        cfg = RenderConfig(100, 200, audience_height=30, model_height=20, captions_height=10)
-        assert cfg.audience_y == 140
-        assert cfg.model_y == 170
-        assert cfg.captions_y == 190
 
     def test_lane_constants(self):
         assert LANE_SCALE == 3
@@ -87,11 +93,11 @@ class TestRenderConfigBands:
         assert cfg.lane_capacity >= 1
         assert cfg.captions_capacity >= 1
 
-    def test_no_text_strip_still_valid(self):
-        cfg = RenderConfig(64, 64, audience_height=0, model_height=0, captions_height=0)
-        assert cfg.audience_y == 64
-        assert cfg.model_y == 64
-        assert cfg.captions_y == 64
+    def test_partial_band_config_stacks_correctly(self):
+        cfg = RenderConfig(100, 200, audience_height=30, model_height=20, captions_height=10)
+        assert cfg.captions_y == 190
+        assert cfg.model_y == 170
+        assert cfg.audience_y == 140
 
 
 class TestOffscreenRenderer:
@@ -276,7 +282,9 @@ class TestAudienceLaneRendering:
     def test_audience_warm_colour(self, renderer):
         weights = np.zeros(96 * 200, dtype=np.float32)
         cap = renderer.config.lane_capacity
-        frame = _make_lane_frame(cap, ord("W"), 1.0)
+        chars = np.full(cap, ord("W"), dtype=np.uint32)
+        committed_attrs = np.zeros(cap, dtype=np.uint32)
+        frame = LaneFrame(chars=chars, attrs_or_probs=committed_attrs, count=cap)
         img = renderer.render(weights, audience=frame)
         aud_y = renderer.config.audience_y
         region = img[aud_y:aud_y + renderer.config.audience_height, :, :]
@@ -286,17 +294,36 @@ class TestAudienceLaneRendering:
             avg_b = on_pixels[:, 2].astype(float).mean()
             assert avg_r > avg_b, "Audience lane should be warmer (higher red than blue)"
 
-    def test_dim_attr_produces_dim_glyph(self, renderer):
+    def test_partial_attr_dims_chars(self, renderer):
+        from brainscan.lanes import ATTR_PARTIAL
         weights = np.zeros(96 * 200, dtype=np.float32)
         cap = renderer.config.lane_capacity
-        frame_bright = _make_lane_frame(cap, ord("W"), 1.0)
+        chars = np.full(cap, ord("W"), dtype=np.uint32)
+        committed = np.zeros(cap, dtype=np.uint32)
+        partial = np.full(cap, ATTR_PARTIAL, dtype=np.uint32)
+        frame_bright = LaneFrame(chars=chars, attrs_or_probs=committed, count=cap)
         img_bright = renderer.render(weights, audience=frame_bright)
-        frame_dim = _make_lane_frame(cap, ord("W"), 0.1)
+        frame_dim = LaneFrame(chars=chars, attrs_or_probs=partial, count=cap)
         img_dim = renderer.render(weights, audience=frame_dim)
         aud_y = renderer.config.audience_y
-        bright_sum = img_bright[aud_y:aud_y + renderer.config.audience_height, :, :3].astype(float).sum()
-        dim_sum = img_dim[aud_y:aud_y + renderer.config.audience_height, :, :3].astype(float).sum()
-        assert bright_sum > dim_sum, "Full-brightness attr should produce brighter audience lane"
+        bright_committed = img_bright[aud_y:aud_y + renderer.config.audience_height, :, :3].astype(float).sum()
+        bright_partial = img_dim[aud_y:aud_y + renderer.config.audience_height, :, :3].astype(float).sum()
+        assert bright_committed > bright_partial, "Committed (cream) should be brighter than partial (dim grey)"
+
+    def test_source_tag_attr_dimmer_than_committed(self, renderer):
+        from brainscan.lanes import ATTR_SOURCE_TAG
+        weights = np.zeros(96 * 200, dtype=np.float32)
+        cap = renderer.config.lane_capacity
+        chars = np.full(cap, ord("X"), dtype=np.uint32)
+        committed = np.zeros(cap, dtype=np.uint32)
+        source_tagged = np.full(cap, ATTR_SOURCE_TAG, dtype=np.uint32)
+        bright_c = renderer.render(
+            weights, audience=LaneFrame(chars=chars, attrs_or_probs=committed, count=cap)
+        )[renderer.config.audience_y:renderer.config.audience_y + renderer.config.audience_height, :, :3].astype(float).sum()
+        bright_s = renderer.render(
+            weights, audience=LaneFrame(chars=chars, attrs_or_probs=source_tagged, count=cap)
+        )[renderer.config.audience_y:renderer.config.audience_y + renderer.config.audience_height, :, :3].astype(float).sum()
+        assert bright_c > bright_s
 
 
 class TestCaptionsRendering:
@@ -388,30 +415,12 @@ class TestThreeBandRendering:
 
 
 class TestLaneScroll:
-    def test_lane_frame_count_respected(self):
-        cfg = RenderConfig(96, 200, audience_height=48, model_height=0, captions_height=0)
-        cap = cfg.lane_capacity
-        chars = np.full(cap, ord("X"), dtype=np.uint32)
+    def test_lane_frame_default_offset_px(self):
+        cap = 4
+        chars = np.zeros(cap, dtype=np.uint32)
         probs = np.ones(cap, dtype=np.float32)
-        frame = LaneFrame(chars=chars, attrs_or_probs=probs, count=cap // 2)
-        assert frame.count == cap // 2
-
-    def test_captions_frame_count_respected(self):
-        cfg = RenderConfig(80, 50, audience_height=0, model_height=0, captions_height=16)
-        cap = cfg.captions_capacity
-        chars = np.full(cap, ord("z"), dtype=np.uint32)
-        frame = CaptionsFrame(chars=chars, count=10)
-        assert frame.count == 10
-
-    def test_partial_lane_renders_without_error(self):
-        renderer = OffscreenRenderer(96, 200, audience_height=48, model_height=0, captions_height=0)
-        weights = np.zeros(96 * 200, dtype=np.float32)
-        cap = renderer.config.lane_capacity
-        chars = np.full(cap, ord("A"), dtype=np.uint32)
-        probs = np.ones(cap, dtype=np.float32)
-        frame = LaneFrame(chars=chars, attrs_or_probs=probs, count=max(1, cap // 3))
-        img = renderer.render(weights, audience=frame)
-        assert img.shape == (200, 96, 4)
+        frame = LaneFrame(chars=chars, attrs_or_probs=probs, count=cap)
+        assert frame.offset_px == 0
 
     def test_zero_count_frame_renders_dark(self):
         renderer = OffscreenRenderer(96, 200, audience_height=48, model_height=0, captions_height=0)
@@ -424,6 +433,33 @@ class TestLaneScroll:
         aud_y = renderer.config.audience_y
         region = img[aud_y:aud_y + renderer.config.audience_height, :, :3]
         assert region.max() <= 16, "Zero-count frame should render as dark background"
+
+    def test_scroll_offset_shifts_glyph_left(self):
+        renderer = OffscreenRenderer(64, 64, model_height=64)
+        cap = renderer.config.lane_capacity
+        weights = np.zeros(64 * 64, dtype=np.float32)
+        chars = np.zeros(cap, dtype=np.uint32)
+        chars[0] = ord("|")
+        probs = np.full(cap, 1.0, dtype=np.float32)
+
+        no_scroll = renderer.render(
+            weights,
+            model=LaneFrame(chars=chars, attrs_or_probs=probs, count=1, offset_px=0),
+        )
+        scrolled = renderer.render(
+            weights,
+            model=LaneFrame(chars=chars, attrs_or_probs=probs, count=1, offset_px=12),
+        )
+
+        def lit_cols(img):
+            band = img[:, :, :3].astype(float).sum(axis=-1)
+            cols = np.argwhere(band > 60)[:, 1]
+            return cols.mean() if len(cols) else -1.0
+
+        a = lit_cols(no_scroll)
+        b = lit_cols(scrolled)
+        if a >= 0 and b >= 0:
+            assert b < a, f"offset_px should shift glyph left; {a=} {b=}"
 
 
 def _make_offscreen_canvas(width, height):

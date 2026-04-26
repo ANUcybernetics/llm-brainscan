@@ -37,6 +37,10 @@ from brainscan.snapshot import capture_weights
 
 log = logging.getLogger(__name__)
 
+AUDIENCE_HEIGHT = 90
+MODEL_LANE_HEIGHT = 90
+CAPTIONS_HEIGHT = 12
+
 
 def get_device() -> torch.device:
     if torch.cuda.is_available():
@@ -238,7 +242,10 @@ def main() -> None:
     offscreen_renderer = None
     if args.save_images:
         offscreen_renderer = OffscreenRenderer(
-            WIDTH, HEIGHT, model_height=TEXT_STRIP_HEIGHT
+            WIDTH, HEIGHT,
+            audience_height=AUDIENCE_HEIGHT,
+            model_height=MODEL_LANE_HEIGHT,
+            captions_height=CAPTIONS_HEIGHT,
         )
         print(f"Offscreen renderer initialised ({WIDTH}x{HEIGHT})")
 
@@ -247,7 +254,9 @@ def main() -> None:
         live_renderer = LiveRenderer(
             WIDTH,
             HEIGHT,
-            model_height=TEXT_STRIP_HEIGHT,
+            audience_height=AUDIENCE_HEIGHT,
+            model_height=MODEL_LANE_HEIGHT,
+            captions_height=CAPTIONS_HEIGHT,
             fullscreen=True,
         )
         print(f"Live renderer initialised ({WIDTH}x{HEIGHT})")
