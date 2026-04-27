@@ -6,6 +6,7 @@ import datetime as dt
 import logging
 import random
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 
 import torch
@@ -13,6 +14,64 @@ import torch
 from brainscan.model import GPT
 
 log = logging.getLogger(__name__)
+
+
+class RebirthPhase(Enum):
+    IDLE = "idle"
+    FADING_OUT = "fading_out"
+    FADING_IN = "fading_in"
+
+
+@dataclass
+class RebirthFade:
+    phase: RebirthPhase = RebirthPhase.IDLE
+    started_at: float = 0.0
+
+
+def step_rebirth_phase(
+    state: RebirthFade,
+    now_t: float,
+    is_due: bool,
+    fade_duration: float = 2.0,
+) -> tuple[RebirthFade, float, bool]:
+    """Advance the rebirth fade state machine.
+
+    Returns: (new_state, global_brightness, should_perform_rebirth_now)
+
+    Phases:
+        IDLE        — global_brightness=1.0; transitions to FADING_OUT when is_due.
+        FADING_OUT  — brightness ramps 1.0→0.0 over fade_duration; at end transitions to
+                       FADING_IN and signals should_perform_rebirth_now=True for one tick.
+        FADING_IN   — brightness ramps 0.0→1.0 over fade_duration; at end → IDLE.
+    """
+    if state.phase == RebirthPhase.IDLE:
+        if is_due:
+            return (
+                RebirthFade(phase=RebirthPhase.FADING_OUT, started_at=now_t),
+                1.0,
+                False,
+            )
+        return state, 1.0, False
+
+    elapsed = now_t - state.started_at
+
+    if state.phase == RebirthPhase.FADING_OUT:
+        brightness = max(0.0, 1.0 - elapsed / fade_duration)
+        if elapsed >= fade_duration:
+            return (
+                RebirthFade(phase=RebirthPhase.FADING_IN, started_at=now_t),
+                0.0,
+                True,
+            )
+        return state, brightness, False
+
+    if state.phase == RebirthPhase.FADING_IN:
+        brightness = min(1.0, elapsed / fade_duration)
+        if elapsed >= fade_duration:
+            return RebirthFade(), 1.0, False
+        return state, brightness, False
+
+    return state, 1.0, False  # unreachable
 
 
 def rotate_audience_log(

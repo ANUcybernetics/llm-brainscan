@@ -38,7 +38,14 @@ from brainscan.layout import (
     layout_to_flat_order,
 )
 from brainscan.model import GPT
-from brainscan.rebirth import RebirthScheduler, rebirth, rotate_audience_log
+from brainscan.rebirth import (
+    RebirthFade,
+    RebirthPhase,
+    RebirthScheduler,
+    rebirth,
+    rotate_audience_log,
+    step_rebirth_phase,
+)
 from brainscan.renderer import (
     CaptionsFrame,
     LaneFrame,
@@ -424,7 +431,7 @@ def main() -> None:
         t0 = time.time()
         step = 0
         prev_state = ConversationState.MUSE
-        rebirth_state: dict[str, object] = {"phase": "idle", "started_at": 0.0}
+        rebirth_fade = RebirthFade()
         global_brightness = 1.0
 
         try:
@@ -489,52 +496,37 @@ def main() -> None:
                 optimiser.step()
 
                 # rebirth state machine
-                rebirth_phase = str(rebirth_state["phase"])
-                if rebirth_phase == "idle":
+                is_due = (
+                    rebirth_fade.phase == RebirthPhase.IDLE
+                    and rebirth_sched.due(dt.datetime.now())
+                )
+                rebirth_fade, global_brightness, should_perform = step_rebirth_phase(
+                    rebirth_fade, now_t, is_due
+                )
+                if should_perform:
                     now_dt = dt.datetime.now()
-                    if rebirth_sched.due(now_dt):
-                        rebirth_state = {"phase": "fading_out", "started_at": now_t}
-                        global_brightness = 1.0
-                elif rebirth_phase == "fading_out":
-                    elapsed = now_t - float(rebirth_state["started_at"])
-                    global_brightness = max(0.0, 1.0 - elapsed / 2.0)
-                    if elapsed >= 2.0:
-                        now_dt = dt.datetime.now()
-                        yesterday = now_dt.date() - dt.timedelta(days=1)
-                        rotate_audience_log(
-                            audience_log, output_dir / "audience", yesterday
-                        )
-                        res = rebirth(
-                            model=model,
-                            seed_corpus=raw_data,
-                            audience_dir=output_dir / "audience",
-                            persist_days=args.persist_audience_days,
-                            seed=int.from_bytes(
-                                hashlib.sha256(
-                                    f"{now_dt.date().isoformat()}-{args.seed}".encode()
-                                ).digest()[:4],
-                                "big",
-                            ),
-                        )
-                        training_data = TextBuffer(
-                            res.corpus, persist_path=audience_log
-                        )
-                        optimiser = torch.optim.AdamW(model.parameters(), lr=args.lr)
-                        rebirth_sched.mark_fired(now_dt)
-                        (output_dir / "rebirth.log").open("a").write(
-                            f"{now_dt.date().isoformat()} seed={res.seed}"
-                            f" persist_days={args.persist_audience_days}\n"
-                        )
-                        _show_event(f"dawn {now_dt.strftime('%H:%M')}", now=now_t)
-                        rebirth_state = {"phase": "fading_in", "started_at": now_t}
-                elif rebirth_phase == "fading_in":
-                    elapsed = now_t - float(rebirth_state["started_at"])
-                    global_brightness = min(1.0, elapsed / 2.0)
-                    if elapsed >= 2.0:
-                        global_brightness = 1.0
-                        rebirth_state = {"phase": "idle", "started_at": 0.0}
-                else:
-                    global_brightness = 1.0
+                    yesterday = now_dt.date() - dt.timedelta(days=1)
+                    rotate_audience_log(audience_log, output_dir / "audience", yesterday)
+                    res = rebirth(
+                        model=model,
+                        seed_corpus=raw_data,
+                        audience_dir=output_dir / "audience",
+                        persist_days=args.persist_audience_days,
+                        seed=int.from_bytes(
+                            hashlib.sha256(
+                                f"{now_dt.date().isoformat()}-{args.seed}".encode()
+                            ).digest()[:4],
+                            "big",
+                        ),
+                    )
+                    training_data = TextBuffer(res.corpus, persist_path=audience_log)
+                    optimiser = torch.optim.AdamW(model.parameters(), lr=args.lr)
+                    rebirth_sched.mark_fired(now_dt)
+                    (output_dir / "rebirth.log").open("a").write(
+                        f"{now_dt.date().isoformat()} seed={res.seed}"
+                        f" persist_days={args.persist_audience_days}\n"
+                    )
+                    _show_event(f"dawn {now_dt.strftime('%H:%M')}", now=now_t)
 
                 if step % args.snapshot_every == 0:
                     current_weights = capture_weights(model)

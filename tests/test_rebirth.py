@@ -4,7 +4,15 @@ from pathlib import Path
 import torch
 
 from brainscan.model import GPT
-from brainscan.rebirth import RebirthResult, RebirthScheduler, rebirth, rotate_audience_log
+from brainscan.rebirth import (
+    RebirthFade,
+    RebirthPhase,
+    RebirthResult,
+    RebirthScheduler,
+    rebirth,
+    rotate_audience_log,
+    step_rebirth_phase,
+)
 from conftest import SMALL_CONFIG
 
 
@@ -200,3 +208,64 @@ class TestRebirthSchedulerPersistence:
         sched = RebirthScheduler(at_hh_mm="06:00", state_path=state_path)
         # should not raise and last_fired_date should be None
         assert sched.due(dt.datetime(2026, 4, 26, 6, 0, 0))
+
+
+class TestRebirthFadeStateMachine:
+    def test_idle_stays_idle_when_not_due(self):
+        s = RebirthFade()
+        new_s, brightness, perform = step_rebirth_phase(s, now_t=0.0, is_due=False)
+        assert new_s.phase == RebirthPhase.IDLE
+        assert brightness == 1.0
+        assert not perform
+
+    def test_idle_to_fading_out_when_due(self):
+        s = RebirthFade()
+        new_s, brightness, perform = step_rebirth_phase(s, now_t=10.0, is_due=True)
+        assert new_s.phase == RebirthPhase.FADING_OUT
+        assert new_s.started_at == 10.0
+        assert brightness == 1.0
+        assert not perform
+
+    def test_fading_out_brightness_ramps_down(self):
+        s = RebirthFade(phase=RebirthPhase.FADING_OUT, started_at=10.0)
+        _, b1, _ = step_rebirth_phase(s, now_t=10.0, is_due=False, fade_duration=2.0)
+        _, b2, _ = step_rebirth_phase(s, now_t=11.0, is_due=False, fade_duration=2.0)
+        _, b3, _ = step_rebirth_phase(s, now_t=11.5, is_due=False, fade_duration=2.0)
+        assert b1 == 1.0
+        assert b2 == 0.5
+        assert b3 == 0.25
+
+    def test_fading_out_completes_signals_perform(self):
+        s = RebirthFade(phase=RebirthPhase.FADING_OUT, started_at=10.0)
+        new_s, brightness, perform = step_rebirth_phase(
+            s, now_t=12.0, is_due=False, fade_duration=2.0
+        )
+        assert new_s.phase == RebirthPhase.FADING_IN
+        assert new_s.started_at == 12.0
+        assert brightness == 0.0
+        assert perform
+
+    def test_fading_in_brightness_ramps_up(self):
+        s = RebirthFade(phase=RebirthPhase.FADING_IN, started_at=12.0)
+        _, b1, _ = step_rebirth_phase(s, now_t=12.0, is_due=False, fade_duration=2.0)
+        _, b2, _ = step_rebirth_phase(s, now_t=13.0, is_due=False, fade_duration=2.0)
+        assert b1 == 0.0
+        assert b2 == 0.5
+
+    def test_fading_in_completes_returns_to_idle(self):
+        s = RebirthFade(phase=RebirthPhase.FADING_IN, started_at=12.0)
+        new_s, brightness, _ = step_rebirth_phase(
+            s, now_t=14.0, is_due=False, fade_duration=2.0
+        )
+        assert new_s.phase == RebirthPhase.IDLE
+        assert brightness == 1.0
+
+    def test_is_due_during_fade_does_not_re_fire(self):
+        # While fading_out / fading_in, is_due must be ignored
+        s = RebirthFade(phase=RebirthPhase.FADING_OUT, started_at=10.0)
+        new_s, _, perform = step_rebirth_phase(
+            s, now_t=11.0, is_due=True, fade_duration=2.0
+        )
+        # Phase should still be FADING_OUT, no re-trigger
+        assert new_s.phase == RebirthPhase.FADING_OUT
+        assert not perform
