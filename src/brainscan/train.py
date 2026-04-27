@@ -59,26 +59,34 @@ from brainscan.tts import TTSEngine
 
 log = logging.getLogger(__name__)
 
+_train_state_history: list[ConversationState] | None = None
+"""Optional list for tests to capture the convo state after each step."""
+
 
 @dataclass
 class PulseState:
     """Thread-safe pulse value with time-based decay."""
-    value: float = 0.0
-    last_render_t: float = 0.0
+    _value: float = 0.0
+    _last_render_t: float = 0.0
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    @property
+    def value(self) -> float:
+        with self._lock:
+            return self._value
 
     def trigger(self, now_t: float) -> None:
         with self._lock:
-            self.value = 1.0
-            self.last_render_t = now_t
+            self._value = 1.0
+            self._last_render_t = now_t
 
     def decay(self, now_t: float, half_life: float = tuning.PULSE_HALF_LIFE_SECONDS) -> float:
         with self._lock:
-            dt_elapsed = now_t - self.last_render_t
+            dt_elapsed = now_t - self._last_render_t
             if dt_elapsed > 0.0:
-                self.value = max(0.0, self.value - dt_elapsed / half_life)
-            self.last_render_t = now_t
-            return self.value
+                self._value = max(0.0, self._value - dt_elapsed / half_life)
+            self._last_render_t = now_t
+            return self._value
 
 
 AUDIENCE_HEIGHT = 90
@@ -501,6 +509,8 @@ def main() -> None:
                     listener=snapshot,
                     token_fn=token_fn,
                 )
+                if _train_state_history is not None:
+                    _train_state_history.append(convo.state)
                 # tts.speak() returns immediately; sd.play() under the hood replaces any
                 # in-flight stream with the new one. Back-to-back responses can't actually
                 # overlap because cooldown_seconds + duration prevents the listener from

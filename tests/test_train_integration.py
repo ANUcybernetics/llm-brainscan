@@ -42,7 +42,8 @@ class ScriptedListener:
 
 def test_listening_then_responding_transition(tmp_path, monkeypatch):
     """Drive train.main() through a partial → commit sequence and verify
-    the audience log received the committed text and a frame was rendered."""
+    the conversation enters LISTENING and RESPONDING, the corpus receives
+    the committed text, and at least one frame is written."""
 
     fake = ScriptedListener(script=[
         (1, "partial", "hel"),
@@ -50,7 +51,9 @@ def test_listening_then_responding_transition(tmp_path, monkeypatch):
         (3, "commit", "hello"),
     ])
 
+    state_history: list = []
     monkeypatch.setattr(train, "_build_listener", lambda args: fake)
+    monkeypatch.setattr(train, "_train_state_history", state_history)
 
     args = [
         "train",
@@ -71,12 +74,17 @@ def test_listening_then_responding_transition(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "argv", args)
     train.main()
 
+    from brainscan.conversation import ConversationState
+    assert ConversationState.LISTENING in state_history, (
+        f"never entered LISTENING; states: {state_history}"
+    )
+    assert ConversationState.RESPONDING in state_history, (
+        f"never entered RESPONDING; states: {state_history}"
+    )
+
     audience_log = tmp_path / "audience_input.txt"
     assert audience_log.exists()
-    # The committed text "hello" should have been appended to the corpus
-    contents = audience_log.read_bytes()
-    assert b"hello" in contents
+    assert b"hello" in audience_log.read_bytes()
 
-    # At least one frame written
     frames = sorted((tmp_path / "frames").glob("*.png"))
     assert len(frames) >= 1

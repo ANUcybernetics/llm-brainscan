@@ -172,4 +172,4 @@ class TestCatchUpEmission:
         # the test of value: state is now MUSE, response_remaining is 0
         assert c.state == ConversationState.MUSE
         # And we didn't emit a flood of muse tokens with the response token_fn
-        assert events.token_count <= 2
+        assert events.token_count == 1

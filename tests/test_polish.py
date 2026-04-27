@@ -314,7 +314,7 @@ class TestCaretRendering:
 
 class TestPulseDecay:
     def test_pulse_decay_is_time_based(self):
-        pulse = PulseState(value=1.0, last_render_t=0.0)
+        pulse = PulseState(_value=1.0, _last_render_t=0.0)
         # dt=0.1s, half_life=0.5 → decay by 0.1/0.5 = 0.2; expect 0.8
         v1 = pulse.decay(now_t=0.1, half_life=0.5)
         assert abs(v1 - 0.8) < 0.01
@@ -326,12 +326,12 @@ class TestPulseDecay:
         assert v3 == 0.0
 
     def test_pulse_no_decay_at_same_time(self):
-        pulse = PulseState(value=0.6, last_render_t=5.0)
+        pulse = PulseState(_value=0.6, _last_render_t=5.0)
         v = pulse.decay(now_t=5.0, half_life=0.5)
         assert v == pytest.approx(0.6)
 
     def test_pulse_clamps_to_zero(self):
-        pulse = PulseState(value=0.1, last_render_t=0.0)
+        pulse = PulseState(_value=0.1, _last_render_t=0.0)
         v = pulse.decay(now_t=10.0, half_life=0.5)
         assert v == 0.0
 
