@@ -14,6 +14,7 @@ import json
 import logging
 import threading
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -49,6 +50,28 @@ from brainscan.snapshot import capture_weights
 from brainscan.tts import TTSEngine
 
 log = logging.getLogger(__name__)
+
+
+@dataclass
+class PulseState:
+    """Thread-safe pulse value with time-based decay."""
+    value: float = 0.0
+    last_render_t: float = 0.0
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def trigger(self, now_t: float) -> None:
+        with self._lock:
+            self.value = 1.0
+            self.last_render_t = now_t
+
+    def decay(self, now_t: float, half_life: float = 0.5) -> float:
+        with self._lock:
+            dt_elapsed = now_t - self.last_render_t
+            if dt_elapsed > 0.0:
+                self.value = max(0.0, self.value - dt_elapsed / half_life)
+            self.last_render_t = now_t
+            return self.value
+
 
 AUDIENCE_HEIGHT = 90
 MODEL_LANE_HEIGHT = 90
@@ -143,14 +166,6 @@ def _process_committed(
         log.info("Audience: %s", text)
         training.append(text)
 
-
-def _decay_pulse(holder: dict, now_t: float, half_life: float = 0.5) -> float:
-    """Decay a pulse holder by elapsed wall-clock time and return the new value."""
-    dt = now_t - holder["last_render_t"]
-    if dt > 0.0:
-        holder["value"] = max(0.0, holder["value"] - dt / half_life)
-    holder["last_render_t"] = now_t
-    return holder["value"]
 
 
 def _caption_state_label(convo: Conversation, step: int, loss: float) -> str:
@@ -373,8 +388,8 @@ def main() -> None:
         )
 
         partial_holder: dict[str, str] = {"text": ""}
-        partial_pulse_holder: dict[str, float] = {"value": 0.0, "last_render_t": 0.0}
-        commit_pulse_holder: dict[str, float] = {"value": 0.0, "last_render_t": 0.0}
+        partial_pulse = PulseState()
+        commit_pulse = PulseState()
         event_holder: dict[str, object] = {"text": "", "expires_at": 0.0}
 
         def _show_event(text: str, duration: float = 5.0, now: float = 0.0) -> None:
@@ -383,8 +398,7 @@ def main() -> None:
 
         def on_partial(text: str) -> None:
             partial_holder["text"] = text
-            partial_pulse_holder["value"] = 1.0
-            partial_pulse_holder["last_render_t"] = time.time() - t0
+            partial_pulse.trigger(time.time() - t0)
 
         def on_speech_end() -> None:
             partial_holder["text"] = ""
@@ -462,7 +476,7 @@ def main() -> None:
                     prev_state == ConversationState.LISTENING
                     and convo.state == ConversationState.RESPONDING
                 ):
-                    commit_pulse_holder["value"] = 1.0
+                    commit_pulse.trigger(now_t)
                 prev_state = convo.state
 
                 # one optimiser step per loop turn
@@ -538,8 +552,8 @@ def main() -> None:
                         cursor_label="",
                         event_line=_current_event_line(now_t, event_holder),
                     )
-                    commit_val = _decay_pulse(commit_pulse_holder, now_t)
-                    partial_val = _decay_pulse(partial_pulse_holder, now_t)
+                    commit_val = commit_pulse.decay(now_t)
+                    partial_val = partial_pulse.decay(now_t)
                     audience, model_frame, captions = _build_lane_frames(
                         convo,
                         captions_state,

@@ -9,13 +9,15 @@ Polish 5: fade-to-charcoal during rebirth (global_brightness)
 
 from __future__ import annotations
 
+import threading
+
 import numpy as np
 import pytest
 
 from brainscan.conversation import Conversation, ConversationState
 from brainscan.captions import CaptionsState
 from brainscan.renderer import LaneFrame, OffscreenRenderer, _UNIFORM_DTYPE
-from brainscan.train import _build_lane_frames, _current_event_line, _decay_pulse
+from brainscan.train import PulseState, _build_lane_frames, _current_event_line
 
 
 # ---------------------------------------------------------------------------
@@ -312,23 +314,56 @@ class TestCaretRendering:
 
 class TestPulseDecay:
     def test_pulse_decay_is_time_based(self):
-        holder: dict = {"value": 1.0, "last_render_t": 0.0}
+        pulse = PulseState(value=1.0, last_render_t=0.0)
         # dt=0.1s, half_life=0.5 → decay by 0.1/0.5 = 0.2; expect 0.8
-        v1 = _decay_pulse(holder, now_t=0.1, half_life=0.5)
+        v1 = pulse.decay(now_t=0.1, half_life=0.5)
         assert abs(v1 - 0.8) < 0.01
         # additional dt=0.4s → decay by 0.4/0.5 = 0.8 more; expect 0.0 (clamped)
-        v2 = _decay_pulse(holder, now_t=0.5, half_life=0.5)
+        v2 = pulse.decay(now_t=0.5, half_life=0.5)
         assert abs(v2 - 0.0) < 0.01
         # stays at 0
-        v3 = _decay_pulse(holder, now_t=1.0, half_life=0.5)
+        v3 = pulse.decay(now_t=1.0, half_life=0.5)
         assert v3 == 0.0
 
     def test_pulse_no_decay_at_same_time(self):
-        holder: dict = {"value": 0.6, "last_render_t": 5.0}
-        v = _decay_pulse(holder, now_t=5.0, half_life=0.5)
+        pulse = PulseState(value=0.6, last_render_t=5.0)
+        v = pulse.decay(now_t=5.0, half_life=0.5)
         assert v == pytest.approx(0.6)
 
     def test_pulse_clamps_to_zero(self):
-        holder: dict = {"value": 0.1, "last_render_t": 0.0}
-        v = _decay_pulse(holder, now_t=10.0, half_life=0.5)
+        pulse = PulseState(value=0.1, last_render_t=0.0)
+        v = pulse.decay(now_t=10.0, half_life=0.5)
         assert v == 0.0
+
+
+class TestPulseStateThreadSafety:
+    def test_concurrent_trigger_and_decay(self):
+        from brainscan.train import PulseState
+
+        pulse = PulseState()
+        errors = []
+
+        def trigger_repeatedly():
+            try:
+                for _ in range(1000):
+                    pulse.trigger(0.0)
+            except Exception as e:
+                errors.append(e)
+
+        def decay_repeatedly():
+            try:
+                for _ in range(1000):
+                    pulse.decay(0.001, half_life=0.5)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [
+            threading.Thread(target=trigger_repeatedly),
+            threading.Thread(target=decay_repeatedly),
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert not errors, f"Errors: {errors}"
+        assert 0.0 <= pulse.value <= 1.0
