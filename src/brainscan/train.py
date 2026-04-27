@@ -202,6 +202,24 @@ def _format_param_name(name: str) -> str:
     return base
 
 
+def _build_listener(args) -> object | None:
+    if args.no_mic:
+        return None
+    from brainscan.stt import SpeechConfig, SpeechListener
+
+    stt_config = SpeechConfig(
+        model_size=args.whisper_model,
+        device=args.whisper_device,
+        chunk_seconds=args.chunk_seconds,
+        silence_threshold=args.silence_threshold,
+        min_speech_seconds=args.min_speech_seconds,
+        max_speech_seconds=args.max_speech_seconds,
+    )
+    listener = SpeechListener(config=stt_config)
+    listener.start()
+    return listener
+
+
 def _caption_state_label(convo: Conversation, step: int, loss: float) -> str:
     if convo.state == ConversationState.LISTENING:
         return "listening..."
@@ -389,20 +407,8 @@ def main() -> None:
         )
         print(f"Live renderer initialised ({WIDTH}x{HEIGHT})")
 
-    listener = None
-    if not args.no_mic:
-        from brainscan.stt import SpeechConfig, SpeechListener
-
-        stt_config = SpeechConfig(
-            model_size=args.whisper_model,
-            device=args.whisper_device,
-            chunk_seconds=args.chunk_seconds,
-            silence_threshold=args.silence_threshold,
-            min_speech_seconds=args.min_speech_seconds,
-            max_speech_seconds=args.max_speech_seconds,
-        )
-        listener = SpeechListener(config=stt_config)
-        listener.start()
+    listener = _build_listener(args)
+    if listener is not None:
         print("Microphone listener started")
 
     drone = None
