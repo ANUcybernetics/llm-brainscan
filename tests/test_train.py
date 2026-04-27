@@ -180,3 +180,31 @@ def test_train_main_smoke(tmp_path, monkeypatch):
     train_mod.main()
     frames = sorted((tmp_path / "frames").glob("*.png"))
     assert len(frames) >= 1
+
+
+class TestFormatParamName:
+    def test_embed_names(self):
+        from brainscan.train import _format_param_name
+        assert _format_param_name("wte.weight") == "embed wte"
+        assert _format_param_name("wpe.weight") == "embed wpe"
+
+    def test_block_names(self):
+        from brainscan.train import _format_param_name
+        assert _format_param_name(
+            "blocks.4.attn.c_attn.weight"
+        ) == "block 4 attn c_attn"
+        assert _format_param_name(
+            "blocks.0.ln_1.bias"
+        ) == "block 0 ln_1"
+        assert _format_param_name(
+            "blocks.7.mlp.c_proj.weight"
+        ) == "block 7 mlp c_proj"
+
+    def test_output_names(self):
+        from brainscan.train import _format_param_name
+        assert _format_param_name("ln_f.weight") == "output ln_f"
+        assert _format_param_name("lm_head.weight") == "output lm_head"
+
+    def test_unknown_falls_through(self):
+        from brainscan.train import _format_param_name
+        assert _format_param_name("custom.thing") == "custom.thing"

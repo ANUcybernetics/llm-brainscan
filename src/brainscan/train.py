@@ -175,6 +175,33 @@ def _process_committed(
 
 
 
+def _format_param_name(name: str) -> str:
+    """Compress a parameter name for the captions cursor label.
+
+    Examples:
+        wte.weight              -> embed wte
+        wpe.weight              -> embed wpe
+        blocks.4.attn.c_attn.weight -> block 4 attn c_attn
+        blocks.0.ln_1.bias      -> block 0 ln_1
+        ln_f.weight             -> output ln_f
+        lm_head.weight          -> output lm_head
+    """
+    base = name.removesuffix(".weight").removesuffix(".bias")
+    parts = base.split(".")
+    if not parts:
+        return name
+    head = parts[0]
+    if head in ("wte", "wpe"):
+        return f"embed {head}"
+    if head == "blocks":
+        block_idx = parts[1]
+        rest = " ".join(parts[2:])
+        return f"block {block_idx} {rest}"
+    if head in ("ln_f", "lm_head"):
+        return f"output {head}"
+    return base
+
+
 def _caption_state_label(convo: Conversation, step: int, loss: float) -> str:
     if convo.state == ConversationState.LISTENING:
         return "listening..."
@@ -539,9 +566,14 @@ def main() -> None:
                         f" | {dt_elapsed:.1f}s | {convo.state.value}"
                     )
 
+                    cursor_idx = int(now_t / 3.0) % len(flat_order) if flat_order else 0
+                    cursor_label = (
+                        _format_param_name(flat_order[cursor_idx])
+                        if flat_order else ""
+                    )
                     captions_state = CaptionsState(
                         state_label=_caption_state_label(convo, step, loss.item()),
-                        cursor_label="",
+                        cursor_label=cursor_label,
                         event_line=_current_event_line(now_t, event_holder),
                     )
                     commit_val = commit_pulse.decay(now_t)
