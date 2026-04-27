@@ -115,11 +115,27 @@ class Conversation:
         token_fn: Callable[[float], tuple[int, float]],
         events: StepEvents,
     ) -> int:
-        interval = self._current_interval()
-        if self._last_token_t < 0.0 or now - self._last_token_t >= interval:
+        MAX_CATCHUP = 8
+        emitted = 0
+        while emitted < MAX_CATCHUP:
+            interval = self._current_interval()
+            if self._last_token_t < 0.0:
+                should_emit = True
+            else:
+                should_emit = (now - self._last_token_t) >= interval
+
+            if not should_emit:
+                break
+
             tok, prob = token_fn(now)
             self.model_lane.push(tok, prob=prob)
-            self._last_token_t = now
+            if self._last_token_t < 0.0:
+                self._last_token_t = now
+            else:
+                self._last_token_t += interval
+
+            emitted += 1
+
             if self.state == ConversationState.RESPONDING:
                 self._response_text.append(tok)
                 self._response_remaining -= 1
@@ -132,8 +148,8 @@ class Conversation:
                     self.state = ConversationState.MUSE
                     self._cooldown_until = now + self.cooldown_seconds
                     self._response_text = []
-            return 1
-        return 0
+                    break  # state changed; stop catching up under old interval
+        return emitted
 
     def _current_interval(self) -> float:
         if self.state == ConversationState.LISTENING:

@@ -141,3 +141,35 @@ class TestSpeakEvent:
         c.step(now=0.0, listener=make_listener(committed=["hi"]), token_fn=_resp_token)
         ev = c.step(now=0.05, listener=make_listener(), token_fn=_resp_token)
         assert not list(ev.speak_events)
+
+
+class TestCatchUpEmission:
+    def test_falls_behind_emits_multiple_tokens(self):
+        c = Conversation(muse_token_interval=0.1)
+        c.step(now=0.0, listener=make_listener(), token_fn=_muse_token)
+        # 5.5 intervals later — expect ~5 tokens
+        events = c.step(now=0.55, listener=make_listener(), token_fn=_muse_token)
+        assert events.token_count >= 5
+
+    def test_catchup_capped_at_eight(self):
+        c = Conversation(muse_token_interval=0.01)
+        c.step(now=0.0, listener=make_listener(), token_fn=_muse_token)
+        # 100 intervals later — capped at 8
+        events = c.step(now=1.0, listener=make_listener(), token_fn=_muse_token)
+        assert events.token_count <= 8
+
+    def test_state_change_mid_catchup_stops_emission(self):
+        # response completes mid-catchup; remaining tokens should NOT be emitted under old interval
+        c = Conversation(
+            response_token_count=2,
+            response_token_interval=0.05,
+            cooldown_seconds=2.0,
+        )
+        c.step(now=0.0, listener=make_listener(committed=["hi"]), token_fn=_resp_token)
+        # large jump — would emit many response tokens but only 2 remain
+        events = c.step(now=10.0, listener=make_listener(), token_fn=_resp_token)
+        # at most 2 tokens for the rest of the response (the 1 we already had + 1 in jump = 2 total per step)
+        # the test of value: state is now MUSE, response_remaining is 0
+        assert c.state == ConversationState.MUSE
+        # And we didn't emit a flood of muse tokens with the response token_fn
+        assert events.token_count <= 2
