@@ -20,6 +20,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from brainscan import tuning
 from brainscan.captions import CaptionsState, compose_caption
 from brainscan.conversation import (
     Conversation,
@@ -71,7 +72,7 @@ class PulseState:
             self.value = 1.0
             self.last_render_t = now_t
 
-    def decay(self, now_t: float, half_life: float = 0.5) -> float:
+    def decay(self, now_t: float, half_life: float = tuning.PULSE_HALF_LIFE_SECONDS) -> float:
         with self._lock:
             dt_elapsed = now_t - self.last_render_t
             if dt_elapsed > 0.0:
@@ -321,7 +322,7 @@ def main() -> None:
     parser.add_argument(
         "--persist-audience-days",
         type=int,
-        default=7,
+        default=tuning.PERSIST_AUDIENCE_DAYS_DEFAULT,
         help="Number of past audience-log days to prepend on rebirth (0 to disable)",
     )
     parser.add_argument(
@@ -432,7 +433,7 @@ def main() -> None:
         commit_pulse = PulseState()
         event_holder: dict[str, object] = {"text": "", "expires_at": 0.0}
 
-        def _show_event(text: str, duration: float = 5.0, now: float = 0.0) -> None:
+        def _show_event(text: str, duration: float = tuning.EVENT_LINE_DURATION_SECONDS, now: float = 0.0) -> None:
             event_holder["text"] = text
             event_holder["expires_at"] = now + duration
 
@@ -534,7 +535,8 @@ def main() -> None:
                     and rebirth_sched.due(dt.datetime.now())
                 )
                 rebirth_fade, global_brightness, should_perform = step_rebirth_phase(
-                    rebirth_fade, now_t, is_due
+                    rebirth_fade, now_t, is_due,
+                    fade_duration=tuning.REBIRTH_FADE_DURATION_SECONDS,
                 )
                 if should_perform:
                     now_dt = dt.datetime.now()
@@ -572,7 +574,7 @@ def main() -> None:
                         f" | {dt_elapsed:.1f}s | {convo.state.value}"
                     )
 
-                    cursor_idx = int(now_t / 3.0) % len(flat_order) if flat_order else 0
+                    cursor_idx = int(now_t / tuning.CURSOR_LABEL_PERIOD_SECONDS) % len(flat_order) if flat_order else 0
                     cursor_label = (
                         _format_param_name(flat_order[cursor_idx])
                         if flat_order else ""

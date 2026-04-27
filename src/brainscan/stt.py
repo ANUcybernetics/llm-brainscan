@@ -8,13 +8,15 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from brainscan import tuning
+
 log = logging.getLogger(__name__)
 
 SAMPLE_RATE = 16000
 CHUNK_SECONDS = 2.0
-SILENCE_THRESHOLD = 0.01
-MIN_SPEECH_SECONDS = 0.5
-MAX_SPEECH_SECONDS = 30.0
+SILENCE_THRESHOLD = tuning.SILENCE_THRESHOLD
+MIN_SPEECH_SECONDS = tuning.MIN_SPEECH_SECONDS
+MAX_SPEECH_SECONDS = tuning.MAX_SPEECH_SECONDS
 
 
 @dataclass(frozen=True)
@@ -24,11 +26,11 @@ class SpeechConfig:
     compute_type: str = "int8"
     sample_rate: int = SAMPLE_RATE
     chunk_seconds: float = CHUNK_SECONDS
-    silence_threshold: float = SILENCE_THRESHOLD
-    min_speech_seconds: float = MIN_SPEECH_SECONDS
-    max_speech_seconds: float = MAX_SPEECH_SECONDS
+    silence_threshold: float = tuning.SILENCE_THRESHOLD
+    min_speech_seconds: float = tuning.MIN_SPEECH_SECONDS
+    max_speech_seconds: float = tuning.MAX_SPEECH_SECONDS
     audio_device: int | None = None
-    partial_interval_seconds: float = 1.0
+    partial_interval_seconds: float = tuning.PARTIAL_INTERVAL_SECONDS
 
     @property
     def min_samples(self) -> int:

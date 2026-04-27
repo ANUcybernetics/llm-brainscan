@@ -6,14 +6,16 @@ import threading
 
 import numpy as np
 
+from brainscan import tuning
+
 
 class DroneOscillator:
     def __init__(
         self,
         sample_rate: int = 44100,
-        min_hz: float = 40.0,
-        max_hz: float = 60.0,
-        gain_db: float = -18.0,
+        min_hz: float = tuning.DRONE_MIN_HZ,
+        max_hz: float = tuning.DRONE_MAX_HZ,
+        gain_db: float = tuning.DRONE_GAIN_DB,
         device: int | None = None,
     ):
         self.sample_rate = sample_rate

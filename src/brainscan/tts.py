@@ -6,6 +6,8 @@ import logging
 
 import numpy as np
 
+from brainscan import tuning
+
 log = logging.getLogger(__name__)
 
 try:  # optional dependency
@@ -25,7 +27,7 @@ class TTSEngine:
         self,
         enabled: bool = False,
         voice: str = "en_AU-fitch-medium",
-        gain_db: float = -12.0,
+        gain_db: float = tuning.TTS_GAIN_DB,
     ):
         self.enabled = enabled
         self.voice_name = voice

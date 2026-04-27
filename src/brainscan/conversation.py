@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable
 
+from brainscan import tuning
 from brainscan.lanes import (
     ATTR_PARTIAL,
     ATTR_SOURCE_TAG,
@@ -47,11 +48,11 @@ class StepEvents:
 
 @dataclass
 class Conversation:
-    muse_token_interval: float = 0.15
-    listening_token_interval: float = 0.6
-    response_token_interval: float = 0.05
-    response_token_count: int = 60
-    cooldown_seconds: float = 3.0
+    muse_token_interval: float = tuning.MUSE_TOKEN_INTERVAL
+    listening_token_interval: float = tuning.LISTENING_TOKEN_INTERVAL
+    response_token_interval: float = tuning.RESPONDING_TOKEN_INTERVAL
+    response_token_count: int = tuning.RESPONSE_TOKEN_COUNT
+    cooldown_seconds: float = tuning.COOLDOWN_SECONDS
     tts_enabled: bool = False
     source_tag: str = "> mic > "
 

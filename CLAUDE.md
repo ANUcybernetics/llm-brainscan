@@ -222,6 +222,15 @@ Plus the existing model/training knobs (`--n-layer`, `--n-head`, `--n-embd`,
 `--min-speech-seconds`, `--max-speech-seconds`, `--whisper-model`,
 `--whisper-device`, `--data`, `--output-dir`).
 
+## Tuning
+
+`src/brainscan/tuning.py` is the single place to adjust exhibition-site knobs
+--- pacing intervals, speech thresholds, TTS/drone gain, pulse decay, rebirth
+fade duration, and so on. All dataclass defaults in `conversation.py`,
+`stt.py`, `tts.py`, and `audio_drone.py` draw from it, as do the magic numbers
+in the train loop. Non-tunable technical constants (sample rates, vocab size,
+model architecture) stay with their respective modules.
+
 ## Conventions
 
 - use `mise exec -- uv run` prefix for all commands
