@@ -446,6 +446,10 @@ def main() -> None:
                     listener=snapshot,
                     token_fn=token_fn,
                 )
+                # tts.speak() returns immediately; sd.play() under the hood replaces any
+                # in-flight stream with the new one. Back-to-back responses can't actually
+                # overlap because cooldown_seconds + duration prevents the listener from
+                # re-triggering until playback ends.
                 for ev in events.speak_events:
                     duration = tts.speak(ev.text)
                     if duration > 0.0:
