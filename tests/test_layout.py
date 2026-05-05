@@ -242,6 +242,49 @@ class TestGutterKnobs:
         b = layout["b"]
         assert b.x - (a.x + a.w) == 13
 
+    def test_label_gap_above_labelled_items(self):
+        params = {"a": 4, "b": 4, "c": 4}
+        sections = [
+            Section(
+                "S",
+                groups=[
+                    Group("g", [
+                        Item("a", None),
+                        Item("b", "lab"),
+                        Item("c", None),
+                    ])
+                ],
+            )
+        ]
+        layout = compute_layout(
+            params, sections=sections, width=20, height=200,
+            section_gutter=0, group_gutter=0, item_gutter=3, label_gap_px=17,
+        )
+        # b is labelled --- its leading gap is label_gap_px
+        assert layout["b"].y - (layout["a"].y + layout["a"].h) == 17
+        # c is unlabelled --- its leading gap is item_gutter
+        assert layout["c"].y - (layout["b"].y + layout["b"].h) == 3
+
+    def test_label_gap_does_not_apply_to_first_item_in_group(self):
+        # If the first item of a group carries a label, no leading gap is added
+        # (the spec says the first item in each group does not get a leading gap).
+        params = {"a": 4, "b": 4}
+        sections = [
+            Section(
+                "S",
+                groups=[
+                    Group("g", [Item("a", "lab")]),
+                    Group("g2", [Item("b", None)]),
+                ],
+            )
+        ]
+        layout = compute_layout(
+            params, sections=sections, width=20, height=200,
+            section_gutter=0, group_gutter=5, item_gutter=2, label_gap_px=17,
+        )
+        assert layout["a"].y == 0
+        assert layout["b"].y - (layout["a"].y + layout["a"].h) == 5
+
 
 class TestTextStripConstants:
     def test_layout_height_plus_strip_equals_height(self):

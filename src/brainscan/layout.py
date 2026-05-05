@@ -166,6 +166,7 @@ def compute_layout(
     section_gutter: int = GUTTER,
     group_gutter: int = GUTTER,
     item_gutter: int = GUTTER,
+    label_gap_px: int = GUTTER,
 ) -> dict[str, Rect]:
     """Compute pixel layout for all parameters.
 
@@ -177,6 +178,9 @@ def compute_layout(
         section_gutter: pixels between sections.
         group_gutter: pixels between groups inside a section.
         item_gutter: pixels between unlabelled consecutive items in a group.
+        label_gap_px: pixels above an item that carries a non-None label
+            (replaces ``item_gutter`` for that item). Does not apply to the
+            first item of a group.
 
     Returns:
         mapping from parameter name to Rect with pixel coordinates.
@@ -186,12 +190,22 @@ def compute_layout(
 
     section_widths: list[int] = []
     for section in sections:
-        item_counts = [
-            param_counts[name]
-            for name in iter_param_names(section)
-            if param_counts.get(name, 0) > 0
-        ]
-        col_w = _column_width(item_counts, height, item_gutter)
+        item_counts: list[int] = []
+        chrome = 0
+        for g_idx, group in enumerate(section.groups):
+            if g_idx > 0:
+                chrome += group_gutter
+            first_in_group = True
+            for item in group.items:
+                count = param_counts.get(item.param_name, 0)
+                if count == 0:
+                    continue
+                if not first_in_group:
+                    chrome += label_gap_px if item.label is not None else item_gutter
+                first_in_group = False
+                item_counts.append(count)
+        avail_h = max(1, height - chrome)
+        col_w = _column_width(item_counts, avail_h, 0)
         section_widths.append(col_w)
 
     total_gutters = max(0, len(sections) - 1) * section_gutter
@@ -215,7 +229,7 @@ def compute_layout(
                 if count == 0:
                     continue
                 if i_idx > 0:
-                    y_cursor += item_gutter
+                    y_cursor += label_gap_px if item.label is not None else item_gutter
                 h = math.ceil(count / col_w)
                 rect = Rect(
                     x=x_cursor, y=y_cursor, w=col_w, h=h,
