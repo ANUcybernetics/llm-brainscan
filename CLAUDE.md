@@ -69,9 +69,19 @@ tests/
 
 ## Display layout
 
-The top 4128px contains weight matrices laid out left to right: embed → 8 block
-columns → output. Matrices stack top-to-bottom within their column. 4px gutters
-separate matrices and sections. See README.md for the ASCII diagram.
+The top 4128px contains weight matrices laid out left to right: `EMBED` → 8
+block columns (`BLK 0..7`) → `OUT`. Sections are separated by 40 px gutters;
+inside each block column, the `attn` and `mlp` groups are separated by a 20
+px group gutter. The four substantial matrices in each block (`c_attn`,
+`attn.c_proj`, `mlp.c_fc`, `mlp.c_proj`) carry the dim-grey labels `qkv`,
+`proj`, `up`, and `down`, drawn 1 px above the matrix in the 16 px label
+gap. The two LN strips inside each group keep the existing 4 px gutter and
+remain unlabelled. The first 24 px of every section column is a label band
+holding the centred section name (`EMBED`, `BLK 0`, …). All chrome is
+zero-padded so overlays never occlude weight data.
+
+The default model is `n_embd=540`, which yields ~28 M parameters and leaves
+margin for the new chrome inside the 4128 px weight region.
 
 The bottom 192px is split into three horizontal bands:
 

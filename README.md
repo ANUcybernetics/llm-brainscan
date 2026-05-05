@@ -70,8 +70,8 @@ parameter). `--save-images` writes frames to `output/frames/`.
 
 ## Architecture
 
-Default model: 8 layers, 9 attention heads, 558 embedding dim, 256 context
-window (~30M parameters).
+Default model: 8 layers, 9 attention heads, 540 embedding dim, 256 context
+window (~28M parameters).
 
 ```
 src/brainscan/
@@ -87,39 +87,37 @@ src/brainscan/
 ## Display layout
 
 Information flows left to right across the 8K canvas. The top 4128px contains
-weight matrices (one pixel per parameter); the bottom 192px is a text strip
-showing generated text coloured by probability.
+weight matrices (one pixel per parameter), separated by 40 px section gutters
+and labelled by an in-gutter section band (`EMBED`, `BLK 0..7`, `OUT`). Inside
+each transformer block, attn and mlp groups are split by a 20 px gutter; the
+four substantial matrices carry tiny labels `qkv`, `proj`, `up`, `down`. The
+bottom 192 px is a three-band text strip (audience / model / captions).
 
 ```
- 7680px
+ 7680 px
 ◄──────────────────────────────────────────────────────────────────────►
-┌──┬─────────┬─────────┬─────────┬─────────┬─────────┬─────────┬─────────┬─────────┬──┐ ▲
-│wt│ ln1     │ ln1     │ ln1     │ ln1     │ ln1     │ ln1     │ ln1     │ ln1     │ln│ │
-│e │─────────│─────────│─────────│─────────│─────────│─────────│─────────│─────────│f │ │
-│  │         │         │         │         │         │         │         │         │  │ │
-│  │ c_attn  │ c_attn  │ c_attn  │ c_attn  │ c_attn  │ c_attn  │ c_attn  │ c_attn  │  │ │
-│  │ QKV     │ QKV     │ QKV     │ QKV     │ QKV     │ QKV     │ QKV     │ QKV     │  │4128px
-│  │         │         │         │         │         │         │         │         │  │ │
-│  │─────────│─────────│─────────│─────────│─────────│─────────│─────────│─────────│  │ │
-│  │ c_proj  │ c_proj  │ c_proj  │ c_proj  │ c_proj  │ c_proj  │ c_proj  │ c_proj  │  │ │
-├──│─────────│─────────│─────────│─────────│─────────│─────────│─────────│─────────│  │ │
-│wp│ ln2     │ ln2     │ ln2     │ ln2     │ ln2     │ ln2     │ ln2     │ ln2     │lm│ │
-│e │─────────│─────────│─────────│─────────│─────────│─────────│─────────│─────────│  │ │
-│  │         │         │         │         │         │         │         │         │hd│ │
-│  │ mlp.fc  │ mlp.fc  │ mlp.fc  │ mlp.fc  │ mlp.fc  │ mlp.fc  │ mlp.fc  │ mlp.fc  │  │ │
-│  │─────────│─────────│─────────│─────────│─────────│─────────│─────────│─────────│  │ │
-│  │mlp.proj │mlp.proj │mlp.proj │mlp.proj │mlp.proj │mlp.proj │mlp.proj │mlp.proj │  │ │
-├──┴─────────┴─────────┴─────────┴─────────┴─────────┴─────────┴─────────┴─────────┴──┤ ▼
-│ Generated text output (bitmap font, 3× scale, coloured by probability)       192px │
-│ ROMEO: O, she doth teach the torches to burn bright! It seems she hangs upon the    │4320px
-│ cheek of night Like a rich jewel in an Ethiope's ear...                              │
-│                                                                                      │
-└──────────────────────────────────────────────────────────────────────────────────────┘ ▼
+┌────┬─────────┬─────────┬   …   ┬─────────┬────┐ ▲
+│EMBE│  BLK 0  │  BLK 1  │       │  BLK 7  │OUT │ │ 24 px section-label band
+│ wte│  qkv    │  qkv    │       │  qkv    │ln_f│ │
+│ wpe│  c_attn │  c_attn │       │  c_attn │... │ │
+│    │  proj   │  proj   │       │  proj   │head│ │ 4128 px weight region
+│    │  c_proj │  c_proj │       │  c_proj │    │ │ (gutters zero-padded)
+│    │  ─ ─ ─  │  ─ ─ ─  │       │  ─ ─ ─  │    │ │ 20 px attn/mlp gutter
+│    │  up     │  up     │       │  up     │    │ │
+│    │  c_fc   │  c_fc   │       │  c_fc   │    │ │
+│    │  down   │  down   │       │  down   │    │ │
+│    │  c_proj │  c_proj │       │  c_proj │    │ │
+└────┴─────────┴─────────┴   …   ┴─────────┴────┘ ▼
+                40 px section gutters
+┌────────────────────────────────────────────────┐ ▲
+│ Audience lane (90 px, 3× scale, warm cream)    │ │
+│ Model lane    (90 px, 3× scale, cool ramp)     │ │ 192 px text strip
+│ Captions     (12 px, 1× scale, dim grey)       │ │
+└────────────────────────────────────────────────┘ ▼
 ```
 
-The weight layout fills the top 4128px. Embeddings and output head are narrow
-columns on the left and right edges. The text strip renders 320 × 4 characters
-at 3× scale, with brightness indicating token confidence.
+The default model is `n_embd=540`, yielding ~28 M parameters --- about 7 %
+smaller than before, to make room for the new chrome.
 
 ## Hardware
 
