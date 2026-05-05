@@ -1,3 +1,4 @@
+import numpy as np
 import pytest
 
 from brainscan.layout import (
@@ -15,6 +16,7 @@ from brainscan.layout import (
     iter_param_names,
     layout_summary,
     layout_to_flat_order,
+    place_weights_on_canvas,
 )
 from brainscan.model import GPT
 
@@ -377,3 +379,61 @@ class TestLayoutHelpers:
         r = Rect(x=10, y=20, w=30, h=40, count=100, name="test")
         d = r.to_dict()
         assert d == {"x": 10, "y": 20, "w": 30, "h": 40, "count": 100}
+
+
+class TestPlaceWeightsOnCanvas:
+    def test_param_lands_at_rect_position(self):
+        params = {"a": 4}
+        sections = [Section("S", groups=[Group("", [Item("a", None)])])]
+        layout = compute_layout(
+            params, sections=sections, width=10, height=10,
+            section_gutter=0, group_gutter=0, item_gutter=0,
+            label_gap_px=0, section_label_height=0,
+        )
+        weights = {"a": np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float32)}
+        canvas = place_weights_on_canvas(weights, layout, width=10, height=10)
+        # rect for "a" starts at (0, 0); width is what compute_layout decided.
+        rect = layout["a"]
+        # The rect.count cells (in row-major) inside the rect hold the values;
+        # the rest of the rect is zero-padded; pixels outside the rect are zero.
+        block = canvas[rect.y:rect.y + rect.h, rect.x:rect.x + rect.w].ravel()
+        np.testing.assert_array_equal(block[:4], [1.0, 2.0, 3.0, 4.0])
+        if block.size > 4:
+            np.testing.assert_array_equal(block[4:], 0.0)
+
+    def test_gutter_pixels_are_zero(self):
+        # Two adjacent sections separated by a section gutter --- the gutter
+        # column must be zero on the canvas, regardless of source values.
+        params = {"a": 4, "b": 4}
+        sections = [
+            Section("L", groups=[Group("", [Item("a", None)])]),
+            Section("R", groups=[Group("", [Item("b", None)])]),
+        ]
+        layout = compute_layout(
+            params, sections=sections, width=20, height=4,
+            section_gutter=3, group_gutter=0, item_gutter=0,
+            label_gap_px=0, section_label_height=0,
+        )
+        weights = {
+            "a": np.full(4, 7.0, dtype=np.float32),
+            "b": np.full(4, 9.0, dtype=np.float32),
+        }
+        canvas = place_weights_on_canvas(weights, layout, width=20, height=4)
+        a, b = layout["a"], layout["b"]
+        # Pixels strictly between a.x+a.w and b.x are gutter and must be zero.
+        for x in range(a.x + a.w, b.x):
+            assert canvas[0, x] == 0.0, f"gutter pixel ({x},0) not zero"
+
+    def test_canvas_shape_and_dtype(self):
+        layout: dict = {}
+        canvas = place_weights_on_canvas({}, layout, width=8, height=4)
+        assert canvas.shape == (4, 8)
+        assert canvas.dtype == np.float32
+
+    def test_missing_param_in_weights_skipped(self):
+        params = {"a": 4}
+        sections = [Section("S", groups=[Group("", [Item("a", None)])])]
+        layout = compute_layout(params, sections=sections, width=10, height=10)
+        # weights dict missing "a" --- should not raise, canvas all zero
+        canvas = place_weights_on_canvas({}, layout, width=10, height=10)
+        assert (canvas == 0.0).all()

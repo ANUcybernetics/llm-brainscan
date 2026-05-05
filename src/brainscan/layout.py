@@ -14,6 +14,8 @@ import math
 from collections.abc import Iterable
 from dataclasses import dataclass
 
+import numpy as np
+
 WIDTH = 7680
 HEIGHT = 4320
 TEXT_STRIP_HEIGHT = 192
@@ -251,6 +253,31 @@ def compute_layout(
 def layout_to_flat_order(layout: dict[str, Rect]) -> list[str]:
     """Return parameter names in layout order (for flattening weights)."""
     return sorted(layout.keys(), key=lambda n: (layout[n].x, layout[n].y))
+
+
+def place_weights_on_canvas(
+    weights: dict[str, np.ndarray],
+    layout: dict[str, Rect],
+    width: int,
+    height: int,
+) -> np.ndarray:
+    """Place each parameter at its layout `Rect` on a 2D canvas.
+
+    Pixels outside any rect (gutters, label bands, padding) are zero. The
+    first ``rect.count`` cells of each rect (row-major) hold the parameter's
+    flat values; remaining cells inside the rect are also zero (since
+    ``rect.h * rect.w`` >= ``rect.count``).
+    """
+    canvas = np.zeros((height, width), dtype=np.float32)
+    for name, rect in layout.items():
+        if name not in weights:
+            continue
+        flat = np.asarray(weights[name], dtype=np.float32).ravel()
+        block = np.zeros(rect.h * rect.w, dtype=np.float32)
+        n = min(rect.count, flat.size, block.size)
+        block[:n] = flat[:n]
+        canvas[rect.y:rect.y + rect.h, rect.x:rect.x + rect.w] = block.reshape(rect.h, rect.w)
+    return canvas
 
 
 def layout_summary(layout: dict[str, Rect]) -> str:
