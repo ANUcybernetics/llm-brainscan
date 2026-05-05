@@ -192,6 +192,57 @@ class TestComputeLayout:
         assert embed_w < block_w
 
 
+class TestGutterKnobs:
+    def _params(self):
+        return {"a": 8, "b": 8, "c": 8, "d": 8}
+
+    def _two_group_section(self) -> list[Section]:
+        return [
+            Section(
+                "S",
+                groups=[
+                    Group("g1", [Item("a", None), Item("b", None)]),
+                    Group("g2", [Item("c", None), Item("d", None)]),
+                ],
+            )
+        ]
+
+    def test_item_gutter_between_unlabelled_items(self):
+        layout = compute_layout(
+            self._params(),
+            sections=self._two_group_section(),
+            width=20, height=200,
+            section_gutter=0, group_gutter=0, item_gutter=7,
+        )
+        a, b = layout["a"], layout["b"]
+        assert b.y - (a.y + a.h) == 7
+
+    def test_group_gutter_between_groups(self):
+        layout = compute_layout(
+            self._params(),
+            sections=self._two_group_section(),
+            width=20, height=200,
+            section_gutter=0, group_gutter=11, item_gutter=2,
+        )
+        b = layout["b"]
+        c = layout["c"]
+        assert c.y - (b.y + b.h) == 11
+
+    def test_section_gutter_between_sections(self):
+        params = {"a": 4, "b": 4}
+        sections = [
+            Section("L", groups=[Group("", [Item("a", None)])]),
+            Section("R", groups=[Group("", [Item("b", None)])]),
+        ]
+        layout = compute_layout(
+            params, sections=sections, width=200, height=20,
+            section_gutter=13, group_gutter=0, item_gutter=0,
+        )
+        a = layout["a"]
+        b = layout["b"]
+        assert b.x - (a.x + a.w) == 13
+
+
 class TestTextStripConstants:
     def test_layout_height_plus_strip_equals_height(self):
         assert LAYOUT_HEIGHT + TEXT_STRIP_HEIGHT == HEIGHT

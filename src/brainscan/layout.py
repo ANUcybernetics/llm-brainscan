@@ -163,7 +163,9 @@ def compute_layout(
     sections: list[Section] | None = None,
     width: int = WIDTH,
     height: int = LAYOUT_HEIGHT,
-    gutter: int = GUTTER,
+    section_gutter: int = GUTTER,
+    group_gutter: int = GUTTER,
+    item_gutter: int = GUTTER,
 ) -> dict[str, Rect]:
     """Compute pixel layout for all parameters.
 
@@ -172,7 +174,9 @@ def compute_layout(
         sections: left-to-right section ordering. Defaults to standard GPT layout.
         width: canvas width in pixels.
         height: canvas height in pixels.
-        gutter: pixels of padding between matrices and between sections.
+        section_gutter: pixels between sections.
+        group_gutter: pixels between groups inside a section.
+        item_gutter: pixels between unlabelled consecutive items in a group.
 
     Returns:
         mapping from parameter name to Rect with pixel coordinates.
@@ -187,10 +191,10 @@ def compute_layout(
             for name in iter_param_names(section)
             if param_counts.get(name, 0) > 0
         ]
-        col_w = _column_width(item_counts, height, gutter)
+        col_w = _column_width(item_counts, height, item_gutter)
         section_widths.append(col_w)
 
-    total_gutters = max(0, len(sections) - 1) * gutter
+    total_gutters = max(0, len(sections) - 1) * section_gutter
     total_content_w = sum(section_widths)
     total_w = total_content_w + total_gutters
 
@@ -203,20 +207,23 @@ def compute_layout(
 
     for section, col_w in zip(sections, section_widths, strict=True):
         y_cursor = 0
-        for group in section.groups:
-            for item in group.items:
+        for g_idx, group in enumerate(section.groups):
+            if g_idx > 0:
+                y_cursor += group_gutter
+            for i_idx, item in enumerate(group.items):
                 count = param_counts.get(item.param_name, 0)
                 if count == 0:
                     continue
+                if i_idx > 0:
+                    y_cursor += item_gutter
                 h = math.ceil(count / col_w)
                 rect = Rect(
                     x=x_cursor, y=y_cursor, w=col_w, h=h,
                     count=count, name=item.param_name,
                 )
                 layout[item.param_name] = rect
-                y_cursor += h + gutter
-
-        x_cursor += col_w + gutter
+                y_cursor += h
+        x_cursor += col_w + section_gutter
 
     return layout
 
