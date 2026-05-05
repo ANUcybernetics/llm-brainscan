@@ -11,7 +11,7 @@ each day so visitors at the same time of day see the same stage of learning.
 
 ## Stack
 
-- Python 3.12, managed with uv via mise
+- Python 3.12 (3.10 on Jetson Orin via `mise.local.toml`), managed with uv via mise
 - PyTorch for model training and inference
 - wgpu (WebGPU via wgpu-native/Vulkan) for GPU-side rendering and colourmaps
 - rendercanvas (GLFW backend) for live fullscreen window display

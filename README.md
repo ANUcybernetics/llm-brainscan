@@ -16,7 +16,7 @@ happens.
 
 ## Setup
 
-Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/). If you have
+Requires Python 3.10+ and [uv](https://docs.astral.sh/uv/). If you have
 [mise](https://mise.jdx.dev/), everything is configured:
 
 ```sh
@@ -30,6 +30,25 @@ Without mise:
 ```sh
 uv sync
 uv run pytest
+```
+
+### On Jetson Orin
+
+JetPack 6.x ships Python 3.10 and the only CUDA-enabled torch wheels for
+aarch64 + CUDA 12.6 are cp310 (via
+[jetson-ai-lab](https://pypi.jetson-ai-lab.io)). The wheel source is already
+declared in `pyproject.toml` with a `python_version == '3.10'` marker, so
+`uv sync` picks the right wheel automatically — just pin Python 3.10
+locally and install the audio backend:
+
+```sh
+cat > mise.local.toml <<EOF
+[tools]
+python = "3.10"
+EOF
+mise install
+mise exec -- uv sync
+sudo apt install libportaudio2  # required by sounddevice for the STT thread
 ```
 
 ## Training
