@@ -56,7 +56,7 @@ class GPT(nn.Module):
         sequence_len: int = 256,
         n_layer: int = 8,
         n_head: int = 9,
-        n_embd: int = 558,
+        n_embd: int = 540,
     ):
         super().__init__()
         self.sequence_len = sequence_len

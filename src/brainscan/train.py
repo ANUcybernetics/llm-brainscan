@@ -34,9 +34,10 @@ from brainscan.layout import (
     TEXT_STRIP_HEIGHT,
     WIDTH,
     compute_layout,
+    compute_text_overlays,
     default_sections,
     layout_summary,
-    layout_to_flat_order,
+    place_weights_on_canvas,
 )
 from brainscan.model import GPT
 from brainscan.rebirth import (
@@ -52,7 +53,6 @@ from brainscan.renderer import (
     LaneFrame,
     LiveRenderer,
     OffscreenRenderer,
-    flatten_weights,
 )
 from brainscan.snapshot import capture_weights
 from brainscan.tts import TTSEngine
@@ -120,15 +120,15 @@ def save_frame(canvas: np.ndarray, path: Path) -> None:
 
 def _build_weight_buffer(
     weights: dict[str, torch.Tensor],
-    flat_order: list[str],
-    canvas_pixels: int,
+    layout: dict,
+    width: int,
+    height: int,
 ) -> np.ndarray:
+    """Place weights at their layout rects on a `(height, width)` canvas, then
+    flatten to the row-major float32 array the renderer expects."""
     np_weights = {k: v.cpu().numpy() for k, v in weights.items()}
-    flat, count = flatten_weights(np_weights, layout_order=flat_order)
-    buf = np.zeros(canvas_pixels, dtype=np.float32)
-    n = min(count, canvas_pixels)
-    buf[:n] = flat[:n]
-    return buf
+    canvas = place_weights_on_canvas(np_weights, layout, width=width, height=height)
+    return canvas.ravel()
 
 
 def _build_lane_frames(
@@ -244,7 +244,7 @@ def main() -> None:
     )
     parser.add_argument("--n-layer", type=int, default=8)
     parser.add_argument("--n-head", type=int, default=9)
-    parser.add_argument("--n-embd", type=int, default=558)
+    parser.add_argument("--n-embd", type=int, default=540)
     parser.add_argument("--sequence-len", type=int, default=256)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--lr", type=float, default=3e-4)
@@ -380,7 +380,16 @@ def main() -> None:
     print(f"Utilisation: {total_params / (WIDTH * HEIGHT) * 100:.1f}%")
 
     sections = default_sections(n_layer=args.n_layer)
-    layout = compute_layout(param_counts, sections=sections)
+    layout = compute_layout(
+        param_counts,
+        sections=sections,
+        section_gutter=tuning.LAYOUT_SECTION_GUTTER_PX,
+        group_gutter=tuning.LAYOUT_GROUP_GUTTER_PX,
+        item_gutter=tuning.LAYOUT_ITEM_GUTTER_PX,
+        label_gap_px=tuning.LAYOUT_LABEL_GAP_PX,
+        section_label_height=tuning.LAYOUT_SECTION_LABEL_PX,
+        min_section_width=tuning.LAYOUT_MIN_SECTION_WIDTH,
+    )
     print(layout_summary(layout))
 
     layout_path = output_dir / "layout.json"
@@ -391,7 +400,7 @@ def main() -> None:
     )
     print(f"\nLayout saved to {layout_path}")
 
-    flat_order = layout_to_flat_order(layout)
+    flat_order = sorted(layout, key=lambda n: (layout[n].x, layout[n].y))
 
     offscreen_renderer = None
     if args.save_images:
@@ -415,6 +424,12 @@ def main() -> None:
             fullscreen=True,
         )
         print(f"Live renderer initialised ({WIDTH}x{HEIGHT})")
+
+    overlays = compute_text_overlays(layout, sections)
+    if offscreen_renderer is not None:
+        offscreen_renderer.set_overlays(overlays)
+    if live_renderer is not None:
+        live_renderer.set_overlays(overlays)
 
     listener = _build_listener(args)
     if listener is not None:
@@ -573,6 +588,27 @@ def main() -> None:
                     )
                     _show_event(f"dawn {now_dt.strftime('%H:%M')}", now=now_t)
 
+                    # Recompute layout/overlays in case n_embd changed.
+                    new_param_counts = {n: p.numel() for n, p in model.named_parameters()}
+                    if new_param_counts != param_counts:
+                        new_layout = compute_layout(
+                            new_param_counts,
+                            sections=sections,
+                            section_gutter=tuning.LAYOUT_SECTION_GUTTER_PX,
+                            group_gutter=tuning.LAYOUT_GROUP_GUTTER_PX,
+                            item_gutter=tuning.LAYOUT_ITEM_GUTTER_PX,
+                            label_gap_px=tuning.LAYOUT_LABEL_GAP_PX,
+                            section_label_height=tuning.LAYOUT_SECTION_LABEL_PX,
+                            min_section_width=tuning.LAYOUT_MIN_SECTION_WIDTH,
+                        )
+                        layout.clear()
+                        layout.update(new_layout)
+                        new_overlays = compute_text_overlays(layout, sections)
+                        if offscreen_renderer is not None:
+                            offscreen_renderer.set_overlays(new_overlays)
+                        if live_renderer is not None:
+                            live_renderer.set_overlays(new_overlays)
+
                 if step % args.snapshot_every == 0:
                     current_weights = capture_weights(model)
                     if drone is not None:
@@ -604,12 +640,11 @@ def main() -> None:
                     )
 
                     if offscreen_renderer is not None:
-                        canvas_pixels = (
-                            offscreen_renderer.width
-                            * offscreen_renderer.height
-                        )
                         buf = _build_weight_buffer(
-                            current_weights, flat_order, canvas_pixels
+                            current_weights,
+                            layout,
+                            offscreen_renderer.width,
+                            offscreen_renderer.height,
                         )
                         canvas = offscreen_renderer.render(
                             buf,
@@ -623,9 +658,8 @@ def main() -> None:
                         )
 
                     if live_renderer is not None:
-                        canvas_pixels = WIDTH * HEIGHT
                         buf = _build_weight_buffer(
-                            current_weights, flat_order, canvas_pixels
+                            current_weights, layout, WIDTH, HEIGHT,
                         )
                         live_renderer.update(
                             buf,
