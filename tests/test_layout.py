@@ -298,6 +298,32 @@ class TestGutterKnobs:
         assert layout["a"].y == 24
         assert layout["b"].y == layout["a"].y + layout["a"].h
 
+    def test_min_section_width_floor_applied(self):
+        # Tiny sections (only 4 params total) would naturally compute a 1px
+        # column; the floor should widen them to min_section_width.
+        params = {"a": 4}
+        sections = [Section("S", groups=[Group("", [Item("a", None)])])]
+        layout = compute_layout(
+            params, sections=sections, width=200, height=200,
+            section_gutter=0, group_gutter=0, item_gutter=0,
+            label_gap_px=0, section_label_height=0,
+            min_section_width=80,
+        )
+        assert layout["a"].w == 80
+
+    def test_min_section_width_does_not_exceed_natural_width(self):
+        # When the natural width is already greater than the floor,
+        # min_section_width does not change anything.
+        params = {"a": 1000}
+        sections = [Section("S", groups=[Group("", [Item("a", None)])])]
+        layout = compute_layout(
+            params, sections=sections, width=200, height=10,
+            section_gutter=0, group_gutter=0, item_gutter=0,
+            label_gap_px=0, section_label_height=0,
+            min_section_width=20,
+        )
+        assert layout["a"].w >= 100  # 1000 / 10 = 100, well above 20
+
 
 class TestTextStripConstants:
     def test_layout_height_plus_strip_equals_height(self):

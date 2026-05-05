@@ -168,6 +168,7 @@ def compute_layout(
     item_gutter: int = GUTTER,
     label_gap_px: int = GUTTER,
     section_label_height: int = 0,
+    min_section_width: int = 1,
 ) -> dict[str, Rect]:
     """Compute pixel layout for all parameters.
 
@@ -184,6 +185,8 @@ def compute_layout(
             first item of a group.
         section_label_height: pixels reserved at the top of each section column
             for a section label. Items inside groups start below this band.
+        min_section_width: minimum column width for a section. Floors narrow
+            sections so they remain visible.
 
     Returns:
         mapping from parameter name to Rect with pixel coordinates.
@@ -208,7 +211,7 @@ def compute_layout(
                 first_in_group = False
                 item_counts.append(count)
         avail_h = max(1, height - chrome)
-        col_w = _column_width(item_counts, avail_h, 0)
+        col_w = max(_column_width(item_counts, avail_h, 0), min_section_width)
         section_widths.append(col_w)
 
     total_gutters = max(0, len(sections) - 1) * section_gutter
