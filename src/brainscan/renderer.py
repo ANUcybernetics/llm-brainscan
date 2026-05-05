@@ -20,6 +20,8 @@ from dataclasses import dataclass
 import numpy as np
 import wgpu
 
+from brainscan.layout import TextOverlay
+
 SHADER_SOURCE = """
 const ATTR_PARTIAL: u32 = 1u;
 const ATTR_SOURCE_TAG: u32 = 2u;
@@ -48,6 +50,7 @@ struct Uniforms {
     audience_pulse: f32,
     audience_edge_pulse: f32,
     global_brightness: f32,
+    overlay_run_count: u32,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -58,6 +61,8 @@ struct Uniforms {
 @group(0) @binding(5) var<storage, read> model_chars: array<u32>;
 @group(0) @binding(6) var<storage, read> model_probs: array<f32>;
 @group(0) @binding(7) var<storage, read> captions_chars: array<u32>;
+@group(0) @binding(8) var<storage, read> overlay_chars: array<u32>;
+@group(0) @binding(9) var<storage, read> overlay_runs: array<vec4<u32>>;
 
 struct VertexOutput {
     @builtin(position) pos: vec4<f32>,
@@ -105,6 +110,34 @@ fn font_pixel(char_idx: u32, gx: u32, gy: u32) -> bool {
     let word = font_data[word_idx];
     let byte_val = (word >> (byte_in_word * 8u)) & 0xFFu;
     return (byte_val & (0x80u >> gx)) != 0u;
+}
+
+fn overlay_pixel(px: u32, py: u32) -> vec4<f32> {
+    // Returns dim-grey overlay colour if this pixel lights up an overlay
+    // glyph; otherwise returns vec4(-1, ...) so the caller falls through to
+    // weight rendering.
+    for (var i: u32 = 0u; i < uniforms.overlay_run_count; i = i + 1u) {
+        let run = overlay_runs[i];
+        let rx = run.x;
+        let ry = run.y;
+        let length = run.z;
+        let char_offset = run.w;
+        let rw = length * 8u;
+        let rh = 16u;
+        if px < rx || px >= rx + rw || py < ry || py >= ry + rh {
+            continue;
+        }
+        let local_x = px - rx;
+        let glyph_col = local_x / 8u;
+        let gx = local_x % 8u;
+        let gy = py - ry;
+        let glyph = overlay_chars[char_offset + glyph_col];
+        if font_pixel(glyph, gx, gy) {
+            return vec4<f32>(0.55, 0.55, 0.60, 1.0);
+        }
+        return vec4<f32>(-1.0, 0.0, 0.0, 1.0);
+    }
+    return vec4<f32>(-1.0, 0.0, 0.0, 1.0);
 }
 
 fn audience_band(px: u32, py: u32) -> vec4<f32> {
@@ -228,6 +261,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         return vec4<f32>(cap_c.rgb * uniforms.global_brightness, 1.0);
     }
 
+    let cap_o = overlay_pixel(px, py);
+    if cap_o.x >= 0.0 {
+        return vec4<f32>(cap_o.rgb * uniforms.global_brightness, 1.0);
+    }
+
     let idx = py * uniforms.width + px;
     var final_rgb: vec3<f32>;
     if idx >= uniforms.param_count {
@@ -274,6 +312,7 @@ _UNIFORM_DTYPE = np.dtype([
     ("audience_pulse", np.float32),
     ("audience_edge_pulse", np.float32),
     ("global_brightness", np.float32),
+    ("overlay_run_count", np.uint32),
 ])
 
 
@@ -332,6 +371,8 @@ class RenderResources:
     model_chars_buffer: wgpu.GPUBuffer
     model_probs_buffer: wgpu.GPUBuffer
     captions_chars_buffer: wgpu.GPUBuffer
+    overlay_chars_buffer: wgpu.GPUBuffer
+    overlay_runs_buffer: wgpu.GPUBuffer
     bind_group: wgpu.GPUBindGroup
     pipeline: wgpu.GPURenderPipeline
 
@@ -375,8 +416,9 @@ def create_render_pipeline(
     uniform_data["audience_pulse"] = np.float32(0.0)
     uniform_data["audience_edge_pulse"] = np.float32(0.0)
     uniform_data["global_brightness"] = np.float32(1.0)
+    uniform_data["overlay_run_count"] = np.uint32(0)
 
-    uniform_size = max(_UNIFORM_DTYPE.itemsize, 64)
+    uniform_size = max(((_UNIFORM_DTYPE.itemsize + 15) // 16) * 16, 64)
     uniform_buffer = device.create_buffer(
         size=uniform_size,
         usage=wgpu.BufferUsage.UNIFORM | wgpu.BufferUsage.COPY_DST,
@@ -422,6 +464,17 @@ def create_render_pipeline(
         usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST,
     )
 
+    OVERLAY_CHARS_CAP = 1024  # ample for ~50 overlays of short text
+    OVERLAY_RUNS_CAP = 256    # at most ~50 runs in production
+    overlay_chars_buffer = device.create_buffer(
+        size=OVERLAY_CHARS_CAP * 4,
+        usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST,
+    )
+    overlay_runs_buffer = device.create_buffer(
+        size=OVERLAY_RUNS_CAP * 16,  # vec4<u32> = 16 bytes
+        usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST,
+    )
+
     bind_group_layout = device.create_bind_group_layout(
         entries=[
             {
@@ -433,7 +486,7 @@ def create_render_pipeline(
                     else wgpu.BufferBindingType.read_only_storage
                 },
             }
-            for i in range(8)
+            for i in range(10)
         ]
     )
 
@@ -446,6 +499,8 @@ def create_render_pipeline(
         model_chars_buffer,
         model_probs_buffer,
         captions_chars_buffer,
+        overlay_chars_buffer,
+        overlay_runs_buffer,
     ]
     bind_group = device.create_bind_group(
         layout=bind_group_layout,
@@ -489,9 +544,40 @@ def create_render_pipeline(
         model_chars_buffer=model_chars_buffer,
         model_probs_buffer=model_probs_buffer,
         captions_chars_buffer=captions_chars_buffer,
+        overlay_chars_buffer=overlay_chars_buffer,
+        overlay_runs_buffer=overlay_runs_buffer,
         bind_group=bind_group,
         pipeline=pipeline,
     )
+
+
+def upload_overlays(
+    res: RenderResources, overlays: list[TextOverlay]
+) -> None:
+    """Pack overlays and upload to the static GPU buffers.
+
+    Stores ``overlay_run_count`` in ``res.uniform_data`` so the next ``draw()``
+    call sees the new count. Caller is responsible for triggering a draw.
+    """
+    chars: list[int] = []
+    runs: list[tuple[int, int, int, int]] = []
+    for ov in overlays:
+        char_offset = len(chars)
+        for ch in ov.text:
+            chars.append(ord(ch) & 0xFF)
+        runs.append((ov.x, ov.y, len(ov.text), char_offset))
+
+    chars_arr = (
+        np.array(chars, dtype=np.uint32) if chars else np.zeros(1, dtype=np.uint32)
+    )
+    runs_arr = (
+        np.array(runs, dtype=np.uint32).reshape(-1, 4)
+        if runs else np.zeros((1, 4), dtype=np.uint32)
+    )
+
+    res.device.queue.write_buffer(res.overlay_chars_buffer, 0, chars_arr.tobytes())
+    res.device.queue.write_buffer(res.overlay_runs_buffer, 0, runs_arr.tobytes())
+    res.uniform_data["overlay_run_count"] = np.uint32(len(runs))
 
 
 @dataclass
@@ -669,6 +755,9 @@ class OffscreenRenderer:
             self.height, self.width, 4
         )
 
+    def set_overlays(self, overlays: list[TextOverlay]) -> None:
+        upload_overlays(self._res, overlays)
+
 
 class LiveRenderer:
     """Render weight data directly to a fullscreen window.
@@ -791,3 +880,6 @@ class LiveRenderer:
 
     def close(self) -> None:
         self._canvas.close()  # type: ignore[union-attr]
+
+    def set_overlays(self, overlays: list[TextOverlay]) -> None:
+        upload_overlays(self._res, overlays)
