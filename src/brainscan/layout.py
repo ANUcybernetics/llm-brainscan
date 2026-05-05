@@ -22,6 +22,8 @@ TEXT_STRIP_HEIGHT = 192
 LAYOUT_HEIGHT = HEIGHT - TEXT_STRIP_HEIGHT
 TOTAL_PIXELS = WIDTH * HEIGHT
 GUTTER = 4
+GLYPH_W = 8
+GLYPH_H = 16
 
 
 @dataclass(frozen=True)
@@ -59,6 +61,15 @@ class Section:
 
     label: str
     groups: list[Group]
+
+
+@dataclass(frozen=True)
+class TextOverlay:
+    """A single short string to be drawn in a gutter or label band."""
+
+    text: str
+    x: int
+    y: int
 
 
 def iter_param_names(section: Section) -> Iterable[str]:
@@ -248,6 +259,44 @@ def compute_layout(
         x_cursor += col_w + section_gutter
 
     return layout
+
+
+def compute_text_overlays(
+    layout: dict[str, Rect], sections: list[Section]
+) -> list[TextOverlay]:
+    """Return overlays for every section label and every labelled matrix.
+
+    Section labels are centred in the section-label band at the top of each
+    section column. Matrix labels are left-aligned 1 px above their matrix.
+    """
+    overlays: list[TextOverlay] = []
+    for section in sections:
+        rects = [
+            layout[name]
+            for name in iter_param_names(section)
+            if name in layout
+        ]
+        if not rects:
+            continue
+        sx = min(r.x for r in rects)
+        sw = max(r.x + r.w for r in rects) - sx
+        if section.label:
+            glyph_w = GLYPH_W * len(section.label)
+            label_x = sx + (sw - glyph_w) // 2
+            overlays.append(TextOverlay(text=section.label, x=label_x, y=0))
+        for group in section.groups:
+            for item in group.items:
+                if item.label is None or item.param_name not in layout:
+                    continue
+                rect = layout[item.param_name]
+                overlays.append(
+                    TextOverlay(
+                        text=item.label,
+                        x=rect.x,
+                        y=rect.y - GLYPH_H - 1,
+                    )
+                )
+    return overlays
 
 
 def layout_to_flat_order(layout: dict[str, Rect]) -> list[str]:

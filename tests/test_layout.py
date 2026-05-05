@@ -11,7 +11,9 @@ from brainscan.layout import (
     Item,
     Rect,
     Section,
+    TextOverlay,
     compute_layout,
+    compute_text_overlays,
     default_sections,
     iter_param_names,
     layout_summary,
@@ -437,3 +439,83 @@ class TestPlaceWeightsOnCanvas:
         # weights dict missing "a" --- should not raise, canvas all zero
         canvas = place_weights_on_canvas({}, layout, width=10, height=10)
         assert (canvas == 0.0).all()
+
+
+class TestComputeTextOverlays:
+    def _setup(self):
+        # Mirror the production shape: a labelled item is never first in its
+        # group, so its label gap sits below other content (not inside the
+        # section-label band).
+        params = {
+            "a": 16,
+            "blocks.0.ln_1.weight": 4,
+            "blocks.0.attn.c_attn.weight": 64,
+        }
+        sections = [
+            Section("EMBED", groups=[Group("", [Item("a", None)])]),
+            Section(
+                "BLK 0",
+                groups=[
+                    Group(
+                        "attn",
+                        [
+                            Item("blocks.0.ln_1.weight", None),
+                            Item("blocks.0.attn.c_attn.weight", "qkv"),
+                        ],
+                    ),
+                ],
+            ),
+        ]
+        layout = compute_layout(
+            params, sections=sections, width=400, height=400,
+            section_gutter=10, group_gutter=0, item_gutter=2,
+            label_gap_px=16, section_label_height=24,
+            min_section_width=80,
+        )
+        return layout, sections
+
+    def test_section_labels_emitted(self):
+        layout, sections = self._setup()
+        overlays = compute_text_overlays(layout, sections)
+        texts = [o.text for o in overlays]
+        assert "EMBED" in texts
+        assert "BLK 0" in texts
+
+    def test_matrix_label_emitted_for_labelled_item(self):
+        layout, sections = self._setup()
+        overlays = compute_text_overlays(layout, sections)
+        texts = [o.text for o in overlays]
+        assert "qkv" in texts
+
+    def test_no_label_for_unlabelled_item(self):
+        layout, sections = self._setup()
+        overlays = compute_text_overlays(layout, sections)
+        # "a" is unlabelled, so its param name must not appear as overlay text
+        assert all(o.text != "a" for o in overlays)
+
+    def test_section_label_within_label_band(self):
+        layout, sections = self._setup()
+        overlays = compute_text_overlays(layout, sections)
+        embed = next(o for o in overlays if o.text == "EMBED")
+        # 8x16 glyph at 1× scale; band is 24 px tall starting at y=0
+        assert 0 <= embed.y <= 24 - 16
+
+    def test_section_label_horizontally_centered(self):
+        layout, sections = self._setup()
+        overlays = compute_text_overlays(layout, sections)
+        embed = next(o for o in overlays if o.text == "EMBED")
+        # Embed section: column starts at x=0, width = layout["a"].w
+        rect = layout["a"]
+        glyph_w = 8 * len(embed.text)
+        expected_x = rect.x + (rect.w - glyph_w) // 2
+        assert embed.x == expected_x
+
+    def test_matrix_label_above_matrix(self):
+        layout, sections = self._setup()
+        overlays = compute_text_overlays(layout, sections)
+        qkv = next(o for o in overlays if o.text == "qkv")
+        rect = layout["blocks.0.attn.c_attn.weight"]
+        # Label baseline 1 px above the matrix top, glyph height 16
+        assert qkv.y == rect.y - 16 - 1
+        # Left-aligned with the matrix
+        assert qkv.x == rect.x
