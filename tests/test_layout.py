@@ -285,6 +285,19 @@ class TestGutterKnobs:
         assert layout["a"].y == 0
         assert layout["b"].y - (layout["a"].y + layout["a"].h) == 5
 
+    def test_section_label_height_pushes_items_down(self):
+        params = {"a": 4, "b": 4}
+        sections = [
+            Section("S", groups=[Group("", [Item("a", None), Item("b", None)])])
+        ]
+        layout = compute_layout(
+            params, sections=sections, width=20, height=200,
+            section_gutter=0, group_gutter=0, item_gutter=0,
+            label_gap_px=0, section_label_height=24,
+        )
+        assert layout["a"].y == 24
+        assert layout["b"].y == layout["a"].y + layout["a"].h
+
 
 class TestTextStripConstants:
     def test_layout_height_plus_strip_equals_height(self):
