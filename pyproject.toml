@@ -2,7 +2,7 @@
 name = "llm-brainscan"
 version = "0.1.0"
 description = "Visualise transformer weight changes during training and activations during inference"
-requires-python = ">=3.12,<3.14"
+requires-python = ">=3.10,<3.14"
 dependencies = [
     "torch>=2.5",
     "numpy",
@@ -38,3 +38,11 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/brainscan"]
+
+[tool.uv]
+override-dependencies = ["onnxruntime<1.24", "numpy<2"]
+
+[tool.uv.sources]
+torch = [
+    { url = "https://pypi.jetson-ai-lab.io/jp6/cu126/+f/62a/1beee9f2f1470/torch-2.8.0-cp310-cp310-linux_aarch64.whl", marker = "python_version == '3.10'" },
+]
