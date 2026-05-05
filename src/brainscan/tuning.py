@@ -76,3 +76,30 @@ REBIRTH_FADE_DURATION_SECONDS = 2.0
 
 PERSIST_AUDIENCE_DAYS_DEFAULT = 7
 """Default for --persist-audience-days CLI flag."""
+
+# --- Layout chrome --------------------------------------------------
+
+LAYOUT_SECTION_GUTTER_PX = 40
+"""Pixels between sections (EMBED, BLK 0..7, OUT)."""
+
+LAYOUT_GROUP_GUTTER_PX = 20
+"""Pixels between attn and mlp groups inside a transformer block."""
+
+LAYOUT_ITEM_GUTTER_PX = 4
+"""Pixels between consecutive unlabelled items (LN strips, embeddings)."""
+
+LAYOUT_LABEL_GAP_PX = 16
+"""Pixels above each labelled matrix (qkv, proj, up, down)."""
+
+LAYOUT_SECTION_LABEL_PX = 24
+"""Height of the section-label band at the top of every section column."""
+
+LAYOUT_MIN_SECTION_WIDTH = 80
+"""Minimum width for any section column. Floors EMBED and OUT so they read
+as sections rather than slivers."""
+
+LAYOUT_LABEL_COLOR = (0.55, 0.55, 0.60)
+"""Dim-grey RGB triple used for both section and matrix labels.
+
+Currently hard-coded in the WGSL fragment shader; kept here for traceability
+and so the tuning surface is complete."""
