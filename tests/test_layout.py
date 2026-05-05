@@ -84,6 +84,24 @@ class TestDefaultSections:
         for name in model_param_counts:
             assert name in all_names, f"Parameter {name} not in any section"
 
+    def test_block_items_carry_matrix_labels(self):
+        sections = default_sections()
+        for i in range(8):
+            blk = next(s for s in sections if s.label == f"BLK {i}")
+            attn = next(g for g in blk.groups if g.label == "attn")
+            mlp = next(g for g in blk.groups if g.label == "mlp")
+            attn_labels = {it.param_name: it.label for it in attn.items}
+            mlp_labels = {it.param_name: it.label for it in mlp.items}
+            p = f"blocks.{i}"
+            assert attn_labels[f"{p}.ln_1.weight"] is None
+            assert attn_labels[f"{p}.ln_1.bias"] is None
+            assert attn_labels[f"{p}.attn.c_attn.weight"] == "qkv"
+            assert attn_labels[f"{p}.attn.c_proj.weight"] == "proj"
+            assert mlp_labels[f"{p}.ln_2.weight"] is None
+            assert mlp_labels[f"{p}.ln_2.bias"] is None
+            assert mlp_labels[f"{p}.mlp.c_fc.weight"] == "up"
+            assert mlp_labels[f"{p}.mlp.c_proj.weight"] == "down"
+
 
 class TestComputeLayout:
     def test_all_params_placed(self, default_layout, model_param_counts):
