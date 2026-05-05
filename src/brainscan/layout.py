@@ -11,6 +11,7 @@ during training), so the same parameter always occupies the same pixel.
 from __future__ import annotations
 
 import math
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 WIDTH = 7680
@@ -35,43 +36,104 @@ class Rect:
 
 
 @dataclass(frozen=True)
-class Section:
-    """A vertical column of matrices in the layout."""
+class Item:
+    """A single parameter slot in a group, optionally labelled."""
+
+    param_name: str
+    label: str | None
+
+
+@dataclass(frozen=True)
+class Group:
+    """A vertically-stacked group of items inside a section."""
 
     label: str
-    param_names: list[str]
+    items: list[Item]
+
+
+@dataclass(frozen=True)
+class Section:
+    """A vertical column of groups in the layout."""
+
+    label: str
+    groups: list[Group]
+
+
+def iter_param_names(section: Section) -> Iterable[str]:
+    """Yield parameter names in display order for a section."""
+    for group in section.groups:
+        for item in group.items:
+            yield item.param_name
 
 
 def default_sections(n_layer: int = 8) -> list[Section]:
-    """Define the left-to-right section ordering for a GPT model."""
-    sections = [
-        Section("embed", ["wte.weight", "wpe.weight"]),
+    """Define the left-to-right section ordering for a GPT model.
+
+    Each transformer block is split into an `attn` and `mlp` group; the four
+    substantial matrices (`c_attn`, `attn.c_proj`, `mlp.c_fc`, `mlp.c_proj`)
+    carry the labels `qkv`, `proj`, `up`, `down`.
+    """
+    sections: list[Section] = [
+        Section(
+            label="EMBED",
+            groups=[
+                Group(
+                    label="",
+                    items=[
+                        Item("wte.weight", None),
+                        Item("wpe.weight", None),
+                    ],
+                )
+            ],
+        )
     ]
     for i in range(n_layer):
         p = f"blocks.{i}"
         sections.append(
             Section(
-                f"block_{i}",
-                [
-                    f"{p}.ln_1.weight",
-                    f"{p}.ln_1.bias",
-                    f"{p}.attn.c_attn.weight",
-                    f"{p}.attn.c_proj.weight",
-                    f"{p}.ln_2.weight",
-                    f"{p}.ln_2.bias",
-                    f"{p}.mlp.c_fc.weight",
-                    f"{p}.mlp.c_proj.weight",
+                label=f"BLK {i}",
+                groups=[
+                    Group(
+                        label="attn",
+                        items=[
+                            Item(f"{p}.ln_1.weight", None),
+                            Item(f"{p}.ln_1.bias", None),
+                            Item(f"{p}.attn.c_attn.weight", "qkv"),
+                            Item(f"{p}.attn.c_proj.weight", "proj"),
+                        ],
+                    ),
+                    Group(
+                        label="mlp",
+                        items=[
+                            Item(f"{p}.ln_2.weight", None),
+                            Item(f"{p}.ln_2.bias", None),
+                            Item(f"{p}.mlp.c_fc.weight", "up"),
+                            Item(f"{p}.mlp.c_proj.weight", "down"),
+                        ],
+                    ),
                 ],
             )
         )
     sections.append(
-        Section("output", ["ln_f.weight", "ln_f.bias", "lm_head.weight"]),
+        Section(
+            label="OUT",
+            groups=[
+                Group(
+                    label="",
+                    items=[
+                        Item("ln_f.weight", None),
+                        Item("ln_f.bias", None),
+                        Item("lm_head.weight", None),
+                    ],
+                )
+            ],
+        )
     )
     return sections
 
 
 def _section_param_total(section: Section, param_counts: dict[str, int]) -> int:
-    return sum(param_counts.get(name, 0) for name in section.param_names)
+    return sum(param_counts.get(name, 0) for name in iter_param_names(section))
 
 
 def _column_width(
@@ -122,7 +184,7 @@ def compute_layout(
     for section in sections:
         item_counts = [
             param_counts[name]
-            for name in section.param_names
+            for name in iter_param_names(section)
             if param_counts.get(name, 0) > 0
         ]
         col_w = _column_width(item_counts, height, gutter)
@@ -141,15 +203,18 @@ def compute_layout(
 
     for section, col_w in zip(sections, section_widths, strict=True):
         y_cursor = 0
-
-        for name in section.param_names:
-            count = param_counts.get(name, 0)
-            if count == 0:
-                continue
-            h = math.ceil(count / col_w)
-            rect = Rect(x=x_cursor, y=y_cursor, w=col_w, h=h, count=count, name=name)
-            layout[name] = rect
-            y_cursor += h + gutter
+        for group in section.groups:
+            for item in group.items:
+                count = param_counts.get(item.param_name, 0)
+                if count == 0:
+                    continue
+                h = math.ceil(count / col_w)
+                rect = Rect(
+                    x=x_cursor, y=y_cursor, w=col_w, h=h,
+                    count=count, name=item.param_name,
+                )
+                layout[item.param_name] = rect
+                y_cursor += h + gutter
 
         x_cursor += col_w + gutter
 

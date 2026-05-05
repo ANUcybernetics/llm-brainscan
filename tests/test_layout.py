@@ -6,10 +6,13 @@ from brainscan.layout import (
     LAYOUT_HEIGHT,
     TEXT_STRIP_HEIGHT,
     WIDTH,
+    Group,
+    Item,
     Rect,
     Section,
     compute_layout,
     default_sections,
+    iter_param_names,
     layout_summary,
     layout_to_flat_order,
 )
@@ -27,13 +30,45 @@ def default_layout(model_param_counts):
     return compute_layout(model_param_counts)
 
 
+class TestItemGroup:
+    def test_item_holds_param_name_and_label(self):
+        it = Item(param_name="blocks.0.attn.c_attn.weight", label="qkv")
+        assert it.param_name == "blocks.0.attn.c_attn.weight"
+        assert it.label == "qkv"
+
+    def test_item_label_can_be_none(self):
+        it = Item(param_name="ln_f.weight", label=None)
+        assert it.label is None
+
+    def test_group_holds_label_and_items(self):
+        g = Group(label="attn", items=[Item("a", "qkv"), Item("b", None)])
+        assert g.label == "attn"
+        assert len(g.items) == 2
+
+    def test_section_holds_groups(self):
+        s = Section(label="block_0", groups=[Group("attn", [Item("a", None)])])
+        assert s.label == "block_0"
+        assert len(s.groups) == 1
+        assert s.groups[0].label == "attn"
+
+    def test_iter_param_names_flattens(self):
+        s = Section(
+            label="x",
+            groups=[
+                Group("g1", [Item("a", None), Item("b", "lab")]),
+                Group("g2", [Item("c", None)]),
+            ],
+        )
+        assert list(iter_param_names(s)) == ["a", "b", "c"]
+
+
 class TestDefaultSections:
     def test_has_embed_blocks_output(self):
         sections = default_sections()
         labels = [s.label for s in sections]
-        assert labels[0] == "embed"
-        assert labels[-1] == "output"
-        assert all(f"block_{i}" in labels for i in range(8))
+        assert labels[0] == "EMBED"
+        assert labels[-1] == "OUT"
+        assert all(f"BLK {i}" in labels for i in range(8))
 
     def test_section_count(self):
         assert len(default_sections()) == 10  # embed + 8 blocks + output
@@ -43,9 +78,9 @@ class TestDefaultSections:
 
     def test_all_model_params_covered(self, model_param_counts):
         sections = default_sections()
-        all_names = set()
+        all_names: set[str] = set()
         for section in sections:
-            all_names.update(section.param_names)
+            all_names.update(iter_param_names(section))
         for name in model_param_counts:
             assert name in all_names, f"Parameter {name} not in any section"
 
@@ -151,22 +186,22 @@ class TestCustomLayout:
     def test_custom_sections(self):
         params = {"a": 100, "b": 200, "c": 300}
         sections = [
-            Section("left", ["a"]),
-            Section("right", ["b", "c"]),
+            Section("left", groups=[Group("", [Item("a", None)])]),
+            Section("right", groups=[Group("", [Item("b", None), Item("c", None)])]),
         ]
         layout = compute_layout(params, sections=sections, width=100, height=100)
         assert layout["a"].x < layout["b"].x
 
     def test_single_section(self):
         params = {"a": 50, "b": 50}
-        sections = [Section("all", ["a", "b"])]
+        sections = [Section("all", groups=[Group("", [Item("a", None), Item("b", None)])])]
         layout = compute_layout(params, sections=sections, width=20, height=20)
         assert layout["a"].x == layout["b"].x
         assert layout["a"].y < layout["b"].y
 
     def test_missing_params_skipped(self):
         params = {"a": 100}
-        sections = [Section("s", ["a", "missing"])]
+        sections = [Section("s", groups=[Group("", [Item("a", None), Item("missing", None)])])]
         layout = compute_layout(params, sections=sections, width=50, height=50)
         assert "a" in layout
         assert "missing" not in layout
