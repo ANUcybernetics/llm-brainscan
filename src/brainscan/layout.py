@@ -309,6 +309,7 @@ def place_weights_on_canvas(
     layout: dict[str, Rect],
     width: int,
     height: int,
+    normalize_per_rect: bool = True,
 ) -> np.ndarray:
     """Place each parameter at its layout `Rect` on a 2D canvas.
 
@@ -316,12 +317,22 @@ def place_weights_on_canvas(
     first ``rect.count`` cells of each rect (row-major) hold the parameter's
     flat values; remaining cells inside the rect are also zero (since
     ``rect.h * rect.w`` >= ``rect.count``).
+
+    When ``normalize_per_rect`` is True (default), each rect's values are
+    rescaled by dividing by their own ``max(|value|)`` so that every matrix
+    spans the full ±1 range. This makes per-matrix structure visible in
+    the colormapped output, at the cost of losing the global scale
+    comparison between matrices. When False, raw values are placed.
     """
     canvas = np.zeros((height, width), dtype=np.float32)
     for name, rect in layout.items():
         if name not in weights:
             continue
         flat = np.asarray(weights[name], dtype=np.float32).ravel()
+        if normalize_per_rect:
+            scale = float(np.max(np.abs(flat))) if flat.size > 0 else 0.0
+            if scale > 1e-10:
+                flat = flat / scale
         block = np.zeros(rect.h * rect.w, dtype=np.float32)
         n = min(rect.count, flat.size, block.size)
         block[:n] = flat[:n]

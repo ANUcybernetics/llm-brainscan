@@ -393,7 +393,7 @@ class TestPlaceWeightsOnCanvas:
             label_gap_px=0, section_label_height=0,
         )
         weights = {"a": np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float32)}
-        canvas = place_weights_on_canvas(weights, layout, width=10, height=10)
+        canvas = place_weights_on_canvas(weights, layout, width=10, height=10, normalize_per_rect=False)
         # rect for "a" starts at (0, 0); width is what compute_layout decided.
         rect = layout["a"]
         # The rect.count cells (in row-major) inside the rect hold the values;
@@ -420,7 +420,7 @@ class TestPlaceWeightsOnCanvas:
             "a": np.full(4, 7.0, dtype=np.float32),
             "b": np.full(4, 9.0, dtype=np.float32),
         }
-        canvas = place_weights_on_canvas(weights, layout, width=20, height=4)
+        canvas = place_weights_on_canvas(weights, layout, width=20, height=4, normalize_per_rect=False)
         a, b = layout["a"], layout["b"]
         # Pixels strictly between a.x+a.w and b.x are gutter and must be zero.
         for x in range(a.x + a.w, b.x):
@@ -428,7 +428,7 @@ class TestPlaceWeightsOnCanvas:
 
     def test_canvas_shape_and_dtype(self):
         layout: dict = {}
-        canvas = place_weights_on_canvas({}, layout, width=8, height=4)
+        canvas = place_weights_on_canvas({}, layout, width=8, height=4, normalize_per_rect=False)
         assert canvas.shape == (4, 8)
         assert canvas.dtype == np.float32
 
@@ -437,8 +437,60 @@ class TestPlaceWeightsOnCanvas:
         sections = [Section("S", groups=[Group("", [Item("a", None)])])]
         layout = compute_layout(params, sections=sections, width=10, height=10)
         # weights dict missing "a" --- should not raise, canvas all zero
-        canvas = place_weights_on_canvas({}, layout, width=10, height=10)
+        canvas = place_weights_on_canvas({}, layout, width=10, height=10, normalize_per_rect=False)
         assert (canvas == 0.0).all()
+
+    def test_normalize_per_rect_scales_each_rect_to_unit_range(self):
+        params = {"a": 4, "b": 4}
+        sections = [
+            Section("S", groups=[Group("", [Item("a", None), Item("b", None)])])
+        ]
+        layout = compute_layout(
+            params, sections=sections, width=10, height=20,
+            section_gutter=0, group_gutter=0, item_gutter=0,
+            label_gap_px=0, section_label_height=0,
+        )
+        # Two rects with different scales: a peaks at 0.5, b peaks at 4.0
+        weights = {
+            "a": np.array([0.1, -0.2, 0.5, -0.3], dtype=np.float32),
+            "b": np.array([1.0, -2.0, 4.0, -1.5], dtype=np.float32),
+        }
+        canvas = place_weights_on_canvas(
+            weights, layout, width=10, height=20, normalize_per_rect=True,
+        )
+        a_rect = layout["a"]
+        b_rect = layout["b"]
+        a_block = canvas[a_rect.y:a_rect.y + a_rect.h, a_rect.x:a_rect.x + a_rect.w].ravel()
+        b_block = canvas[b_rect.y:b_rect.y + b_rect.h, b_rect.x:b_rect.x + b_rect.w].ravel()
+        # First a.count cells of a's rect = a's values / 0.5
+        np.testing.assert_allclose(a_block[:4], [0.2, -0.4, 1.0, -0.6])
+        # First b.count cells of b's rect = b's values / 4.0
+        np.testing.assert_allclose(b_block[:4], [0.25, -0.5, 1.0, -0.375])
+
+    def test_normalize_per_rect_handles_all_zero_rect(self):
+        params = {"a": 4}
+        sections = [Section("S", groups=[Group("", [Item("a", None)])])]
+        layout = compute_layout(params, sections=sections, width=10, height=10)
+        # All-zero weights should not raise (no division by zero)
+        weights = {"a": np.zeros(4, dtype=np.float32)}
+        canvas = place_weights_on_canvas(
+            weights, layout, width=10, height=10, normalize_per_rect=True,
+        )
+        rect = layout["a"]
+        block = canvas[rect.y:rect.y + rect.h, rect.x:rect.x + rect.w]
+        assert (block == 0.0).all()
+
+    def test_normalize_per_rect_default_is_true(self):
+        # Verifies the production default: normalisation is on by default.
+        params = {"a": 4}
+        sections = [Section("S", groups=[Group("", [Item("a", None)])])]
+        layout = compute_layout(params, sections=sections, width=10, height=10)
+        weights = {"a": np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float32)}
+        canvas = place_weights_on_canvas(weights, layout, width=10, height=10)
+        rect = layout["a"]
+        block = canvas[rect.y:rect.y + rect.h, rect.x:rect.x + rect.w].ravel()
+        # Default normalise: values divided by 4.0 → [0.25, 0.5, 0.75, 1.0]
+        np.testing.assert_allclose(block[:4], [0.25, 0.5, 0.75, 1.0])
 
 
 class TestComputeTextOverlays:
