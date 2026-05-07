@@ -274,6 +274,35 @@ fade duration, and so on. All dataclass defaults in `conversation.py`,
 in the train loop. Non-tunable technical constants (sample rates, vocab size,
 model architecture) stay with their respective modules.
 
+## Deployment on Jetson
+
+Live exhibition runs as a user-level systemd service. The unit file is
+`deploy/brainscan.service` and is installed under
+`~jane/.config/systemd/user/brainscan.service`. The service waits for
+`graphical-session.target` so it starts only after the auto-login X
+session is up.
+
+Install / refresh from a clean repo on the Jetson:
+
+```sh
+mkdir -p ~/.config/systemd/user
+cp deploy/brainscan.service ~/.config/systemd/user/brainscan.service
+systemctl --user daemon-reload
+systemctl --user enable --now brainscan.service
+```
+
+Day-to-day operations:
+
+```sh
+systemctl --user status brainscan      # is it running?
+systemctl --user restart brainscan     # after a code pull
+journalctl --user -u brainscan -f      # tail logs (auto-flushed; PYTHONUNBUFFERED=1)
+journalctl --user -u brainscan --since "1 hour ago"
+```
+
+The unit auto-restarts on failure (10 s backoff, max 5 restarts per
+10 min) and re-launches whenever the X session restarts.
+
 ## Conventions
 
 - use `mise exec -- uv run` prefix for all commands

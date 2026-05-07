@@ -1,0 +1,19 @@
+[Unit]
+Description=LLM Brainscan: live training and weight visualisation
+Documentation=https://github.com/ANUcybernetics/llm-brainscan
+After=graphical-session.target
+Requires=graphical-session.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/llm-brainscan
+Environment=DISPLAY=:0
+Environment=PYTHONUNBUFFERED=1
+ExecStart=%h/projects/llm-brainscan/.venv/bin/python -m brainscan.train --live --data /ssd/brainscan/data/pg19.bin --rebirth-at "MON 02:00"
+Restart=on-failure
+RestartSec=10s
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Install]
+WantedBy=graphical-session.target

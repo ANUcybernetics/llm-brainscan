@@ -1,10 +1,10 @@
 ---
 id: TASK-2
 title: Set up systemd service for live training on Jetson
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-05-06 07:10'
-updated_date: '2026-05-06 07:11'
+updated_date: '2026-05-07 21:00'
 labels:
   - deployment
   - jetson
@@ -22,10 +22,20 @@ Use a user-level systemd unit under /home/jane/.config/systemd/user/ with `login
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A systemd unit file is checked into the repo under deploy/ (or similar) so it can be reproduced
-- [ ] #2 The service starts python -m brainscan.train --live with DISPLAY=:0 and the right working directory
-- [ ] #3 The service auto-starts on boot (linger enabled if user-level)
-- [ ] #4 The service auto-restarts on crash with a sensible backoff
-- [ ] #5 Logs go to a stable path (e.g. /var/log/brainscan/ or via journalctl) and are reviewable with a single command
-- [ ] #6 README has a short '\''Deployment on Jetson'\'' section with the install + enable + status + logs commands
+- [x] #1 A systemd unit file is checked into the repo under deploy/ (or similar) so it can be reproduced
+- [x] #2 The service starts python -m brainscan.train --live with DISPLAY=:0 and the right working directory
+- [x] #3 The service auto-starts on boot (linger enabled if user-level)
+- [x] #4 The service auto-restarts on crash with a sensible backoff
+- [x] #5 Logs go to a stable path (e.g. /var/log/brainscan/ or via journalctl) and are reviewable with a single command
+- [x] #6 README has a short '\''Deployment on Jetson'\'' section with the install + enable + status + logs commands
 <!-- AC:END -->
+
+## Implementation Notes
+
+User-level unit at `deploy/brainscan.service`. Install path:
+`~jane/.config/systemd/user/brainscan.service`. Started via
+`graphical-session.target` (Jetson autologin makes this fire ~immediately
+after boot, so no `loginctl enable-linger` is needed). Logs via
+`journalctl --user -u brainscan` with `PYTHONUNBUFFERED=1` so output
+flushes per line. CLAUDE.md "Deployment on Jetson" section has the
+install + status + logs commands.
