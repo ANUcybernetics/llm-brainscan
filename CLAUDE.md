@@ -294,11 +294,15 @@ systemctl --user enable --now brainscan.service
 Day-to-day operations:
 
 ```sh
-systemctl --user status brainscan      # is it running?
-systemctl --user restart brainscan     # after a code pull
-journalctl --user -u brainscan -f      # tail logs (auto-flushed; PYTHONUNBUFFERED=1)
-journalctl --user -u brainscan --since "1 hour ago"
+systemctl --user status brainscan          # is it running?
+systemctl --user restart brainscan         # after a code pull
+journalctl --user-unit brainscan -f        # tail logs (auto-flushed; PYTHONUNBUFFERED=1)
+journalctl --user-unit brainscan --since "1 hour ago"
 ```
+
+Note: use `--user-unit brainscan`, not `--user -u brainscan`. Per-user
+journald isn't enabled on the Jetson, so user-unit logs land in the
+system journal and need the system-journal flag form to filter.
 
 The unit auto-restarts on failure (10 s backoff, max 5 restarts per
 10 min) and re-launches whenever the X session restarts.
