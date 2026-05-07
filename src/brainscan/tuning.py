@@ -77,6 +77,13 @@ REBIRTH_FADE_DURATION_SECONDS = 2.0
 PERSIST_AUDIENCE_CYCLES_DEFAULT = 2
 """Default for --persist-audience-cycles CLI flag (each cycle ≈ one week of audience)."""
 
+SEED_CORPUS_SAMPLING_WEIGHT = 0.9
+"""Fraction of each training batch sampled from the seed corpus vs audience.
+
+Rest is sampled from accumulated audience speech, so visitor input continues
+to shape training even when the seed corpus is orders of magnitude larger.
+"""
+
 # --- Layout chrome --------------------------------------------------
 
 LAYOUT_SECTION_GUTTER_PX = 40

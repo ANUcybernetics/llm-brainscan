@@ -161,6 +161,23 @@ call, and returns events the caller acts on (`speak_events`,
 Every committed audience utterance is also appended to the training
 `TextBuffer`, so conversation literally feeds the model's future selves.
 
+## Training corpus
+
+The corpus has two parts:
+
+- **Seed corpus** — large, immutable, memory-mapped via `np.memmap` at
+  startup. Loaded from `--data` (path to a single file). Sized for the
+  artwork (e.g., PG-19 at ~10 GB).
+- **Audience buffer** — small, mutable, in-RAM (`TextBuffer`). Accumulates
+  spoken input live and persists to `output/audience_input.txt`.
+
+`prepare_batches` samples each batch as a mixture: `seed_weight` of rows
+(default `0.9` from `tuning.SEED_CORPUS_SAMPLING_WEIGHT`) come from the
+seed; the rest from the audience buffer. When the audience is shorter
+than `sequence_len + 1`, all rows fall back to the seed. This lets a
+small, growing audience contribution shape training meaningfully even
+when the seed is orders of magnitude larger.
+
 ## Weekly rebirth
 
 `--rebirth-at "DOW HH:MM"` (e.g., `"MON 02:00"`) schedules a weekly reset.
@@ -172,9 +189,10 @@ At rebirth time:
    `torch.manual_seed(weekly_seed)` where
    `weekly_seed = sha256(iso_week_key+seed)[:4]` and `iso_week_key` is e.g.
    `"2026-W18"` (reproducible per ISO week).
-3. The training corpus is rebuilt as `last_N_cycles_audience + seed_corpus`
-   where N comes from `--persist-audience-cycles` (default 2, 0 disables);
-   each cycle file is roughly one week of audience speech.
+3. The audience buffer is reset to `last_N_cycles_audience` where N comes
+   from `--persist-audience-cycles` (default 2, 0 disables); each cycle
+   file is roughly one week of audience speech. The seed corpus itself
+   is loaded once at startup and persists across rebirths.
 4. The optimiser is rebuilt fresh.
 
 Each rebirth fires at most once per ISO week. If the system is down at the
@@ -217,8 +235,9 @@ re-trigger on the model's own playback.
   conversation's lane buffers and caption state into renderer payloads.
 - `Conversation.step(now, listener_snapshot, token_fn)` --- advance the
   state machine; returns `StepEvents` describing requested side effects.
-- `rebirth(model, seed_corpus, audience_dir, persist_count, seed)` --- reset
-  weights and rebuild corpus; returns `RebirthResult(corpus, seed)`.
+- `rebirth(model, audience_dir, persist_count, seed)` --- reset weights
+  and load historical audience; returns `RebirthResult(audience, seed)`.
+  The seed corpus is loaded once at training startup, not at rebirth.
 
 ## CLI flags
 

@@ -356,11 +356,14 @@ def main() -> None:
     data_dir = Path("data")
     data_dir.mkdir(exist_ok=True)
     data_path = Path(args.data) if args.data else download_shakespeare(data_dir)
-    raw_data = data_path.read_bytes()
+    seed_corpus = np.memmap(data_path, dtype=np.uint8, mode="r")
 
     audience_log = output_dir / "audience_input.txt"
-    training_data = TextBuffer(raw_data, persist_path=audience_log)
-    print(f"Dataset: {len(training_data):,} bytes from {data_path}")
+    training_data = TextBuffer(b"", persist_path=audience_log)
+    print(
+        f"Dataset: {len(seed_corpus):,} seed bytes from {data_path}"
+        f" + {len(training_data):,} audience bytes"
+    )
 
     model = GPT(
         vocab_size=256,
@@ -547,7 +550,12 @@ def main() -> None:
 
                 # one optimiser step per loop turn
                 x, y = prepare_batches(
-                    training_data, args.batch_size, args.sequence_len, device
+                    training_data,
+                    args.batch_size,
+                    args.sequence_len,
+                    device,
+                    seed_corpus=seed_corpus,
+                    seed_weight=tuning.SEED_CORPUS_SAMPLING_WEIGHT,
                 )
                 _, loss = model(x, y)
                 optimiser.zero_grad()
@@ -577,7 +585,6 @@ def main() -> None:
                     )
                     res = rebirth(
                         model=model,
-                        seed_corpus=raw_data,
                         audience_dir=output_dir / "audience",
                         persist_count=args.persist_audience_cycles,
                         seed=int.from_bytes(
@@ -587,7 +594,7 @@ def main() -> None:
                             "big",
                         ),
                     )
-                    training_data = TextBuffer(res.corpus, persist_path=audience_log)
+                    training_data = TextBuffer(res.audience, persist_path=audience_log)
                     optimiser = torch.optim.AdamW(model.parameters(), lr=args.lr)
                     rebirth_sched.mark_fired(now_dt)
                     (output_dir / "rebirth.log").open("a").write(
@@ -624,7 +631,8 @@ def main() -> None:
                     dt_elapsed = time.time() - t0
                     print(
                         f"step {step:5d} | loss {loss.item():.4f}"
-                        f" | data {len(training_data):,}B"
+                        f" | seed {len(seed_corpus):,}B"
+                        f" | aud {len(training_data):,}B"
                         f" | {dt_elapsed:.1f}s | {convo.state.value}"
                     )
 

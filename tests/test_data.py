@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 
 from brainscan.data import decode, prepare_batches
@@ -47,3 +48,58 @@ class TestPrepareBatches:
         x1, _ = prepare_batches(data, batch_size=4, sequence_len=16, device=device)
         x2, _ = prepare_batches(data, batch_size=4, sequence_len=16, device=device)
         assert not torch.equal(x1, x2)
+
+
+class TestPrepareBatchesMixedSeed:
+    def test_seed_corpus_dominates_batch_when_weight_high(self, device):
+        # All-A audience, all-B seed; high seed_weight -> mostly Bs
+        audience = b"A" * 1000
+        seed_corpus = np.frombuffer(b"B" * 100_000, dtype=np.uint8)
+        x, _ = prepare_batches(
+            audience,
+            batch_size=10,
+            sequence_len=16,
+            device=device,
+            seed_corpus=seed_corpus,
+            seed_weight=0.9,
+        )
+        # 9/10 rows expected to be all-B
+        b_rows = (x == ord("B")).all(dim=1).sum().item()
+        a_rows = (x == ord("A")).all(dim=1).sum().item()
+        assert b_rows == 9
+        assert a_rows == 1
+
+    def test_audience_only_when_seed_weight_zero(self, device):
+        audience = b"A" * 1000
+        seed_corpus = np.frombuffer(b"B" * 100_000, dtype=np.uint8)
+        x, _ = prepare_batches(
+            audience,
+            batch_size=10,
+            sequence_len=16,
+            device=device,
+            seed_corpus=seed_corpus,
+            seed_weight=0.0,
+        )
+        assert (x == ord("A")).all()
+
+    def test_seed_only_when_audience_too_small(self, device):
+        audience = b"A" * 4  # smaller than sequence_len + 1
+        seed_corpus = np.frombuffer(b"B" * 100_000, dtype=np.uint8)
+        x, _ = prepare_batches(
+            audience,
+            batch_size=8,
+            sequence_len=16,
+            device=device,
+            seed_corpus=seed_corpus,
+            seed_weight=0.5,
+        )
+        assert (x == ord("B")).all()
+
+    def test_default_behaviour_unchanged_without_seed(self, device):
+        # No seed_corpus -> identical to single-source path
+        data = bytes(range(256)) * 100
+        x, y = prepare_batches(
+            data, batch_size=4, sequence_len=16, device=device
+        )
+        assert x.shape == (4, 16)
+        assert y.shape == (4, 16)

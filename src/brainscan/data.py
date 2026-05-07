@@ -49,18 +49,67 @@ def prepare_batches(
     batch_size: int,
     sequence_len: int,
     device: torch.device,
+    *,
+    seed_corpus: np.ndarray | None = None,
+    seed_weight: float = 0.9,
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    """Sample a training batch.
+
+    Single-source mode (seed_corpus=None): all rows sampled from data.
+    Mixed mode: seed_weight of rows sampled from seed_corpus, rest from data
+    (the audience). Falls back to seed-only when audience is shorter than
+    sequence_len + 1.
+    """
     raw = data.data if isinstance(data, TextBuffer) else data
-    arr = np.frombuffer(raw, dtype=np.uint8).copy()
-    n = len(arr)
-    ix = torch.randint(n - sequence_len, (batch_size,))
-    x = torch.stack(
-        [torch.from_numpy(arr[i : i + sequence_len].astype(np.int64)) for i in ix]
-    )
-    y = torch.stack(
-        [
-            torch.from_numpy(arr[i + 1 : i + 1 + sequence_len].astype(np.int64))
-            for i in ix
-        ]
-    )
-    return x.to(device), y.to(device)
+    arr = np.frombuffer(raw, dtype=np.uint8)
+
+    if seed_corpus is None:
+        return _sample_single(arr, batch_size, sequence_len, device)
+
+    if len(arr) < sequence_len + 1:
+        return _sample_single(seed_corpus, batch_size, sequence_len, device)
+
+    n_seed_rows = round(batch_size * seed_weight)
+    n_aud_rows = batch_size - n_seed_rows
+
+    rows_x: list[torch.Tensor] = []
+    rows_y: list[torch.Tensor] = []
+    if n_seed_rows > 0:
+        _append_rows(seed_corpus, n_seed_rows, sequence_len, rows_x, rows_y)
+    if n_aud_rows > 0:
+        _append_rows(arr, n_aud_rows, sequence_len, rows_x, rows_y)
+    return torch.stack(rows_x).to(device), torch.stack(rows_y).to(device)
+
+
+def _sample_single(
+    arr: np.ndarray,
+    batch_size: int,
+    sequence_len: int,
+    device: torch.device,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    rows_x: list[torch.Tensor] = []
+    rows_y: list[torch.Tensor] = []
+    _append_rows(arr, batch_size, sequence_len, rows_x, rows_y)
+    return torch.stack(rows_x).to(device), torch.stack(rows_y).to(device)
+
+
+def _append_rows(
+    arr: np.ndarray,
+    n_rows: int,
+    sequence_len: int,
+    rows_x: list[torch.Tensor],
+    rows_y: list[torch.Tensor],
+) -> None:
+    ix = torch.randint(len(arr) - sequence_len, (n_rows,))
+    for i in ix:
+        i_int = int(i)
+        rows_x.append(
+            torch.from_numpy(
+                arr[i_int : i_int + sequence_len].astype(np.int64)
+            )
+        )
+        rows_y.append(
+            torch.from_numpy(
+                arr[i_int + 1 : i_int + 1 + sequence_len].astype(np.int64)
+            )
+        )

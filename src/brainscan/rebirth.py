@@ -87,13 +87,12 @@ def rotate_audience_log(
 
 @dataclass
 class RebirthResult:
-    corpus: bytes
+    audience: bytes
     seed: int
 
 
 def rebirth(
     model: GPT,
-    seed_corpus: bytes,
     audience_dir: Path,
     persist_count: int,
     seed: int,
@@ -105,9 +104,8 @@ def rebirth(
 
     model.apply(model._init_weights)
 
-    persisted = _load_recent_audience(audience_dir, persist_count)
-    corpus = persisted + seed_corpus
-    return RebirthResult(corpus=corpus, seed=seed)
+    audience = _load_recent_audience(audience_dir, persist_count)
+    return RebirthResult(audience=audience, seed=seed)
 
 
 def _load_recent_audience(audience_dir: Path, persist_count: int) -> bytes:

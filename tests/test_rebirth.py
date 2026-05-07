@@ -74,7 +74,6 @@ class TestRebirth:
 
         result = rebirth(
             model=model,
-            seed_corpus=b"abcdef",
             audience_dir=tmp_path / "audience",
             persist_count=0,
             seed=42,
@@ -83,18 +82,17 @@ class TestRebirth:
         after = next(iter(model.parameters())).detach().clone()
         assert not torch.equal(before, after)
 
-    def test_rebirth_returns_corpus(self, tmp_path):
+    def test_rebirth_returns_empty_audience_when_no_history(self, tmp_path):
         model = GPT(**SMALL_CONFIG)
         result = rebirth(
             model=model,
-            seed_corpus=b"abcdef",
             audience_dir=tmp_path / "audience",
             persist_count=0,
             seed=42,
         )
-        assert result.corpus.startswith(b"abcdef")
+        assert result.audience == b""
 
-    def test_rebirth_prepends_recent_logs(self, tmp_path):
+    def test_rebirth_loads_recent_audience_logs(self, tmp_path):
         adir = tmp_path / "audience"
         adir.mkdir()
         (adir / "2026-04-13.txt").write_text("oldold")
@@ -103,17 +101,14 @@ class TestRebirth:
 
         result = rebirth(
             model=model,
-            seed_corpus=b"SEED",
             audience_dir=adir,
             persist_count=2,
             seed=1,
         )
-        # most-recent persisted text appears, plus the seed
-        assert b"oldold" in result.corpus
-        assert b"newer" in result.corpus
-        assert b"SEED" in result.corpus
+        assert b"oldold" in result.audience
+        assert b"newer" in result.audience
 
-    def test_persist_count_zero_seed_only(self, tmp_path):
+    def test_persist_count_zero_returns_empty(self, tmp_path):
         adir = tmp_path / "audience"
         adir.mkdir()
         (adir / "2026-04-20.txt").write_text("ignored")
@@ -121,13 +116,11 @@ class TestRebirth:
 
         result = rebirth(
             model=model,
-            seed_corpus=b"SEED",
             audience_dir=adir,
             persist_count=0,
             seed=1,
         )
-        assert b"ignored" not in result.corpus
-        assert result.corpus == b"SEED"
+        assert result.audience == b""
 
     def test_persist_count_caps_files_loaded(self, tmp_path):
         adir = tmp_path / "audience"
@@ -139,21 +132,19 @@ class TestRebirth:
 
         result = rebirth(
             model=model,
-            seed_corpus=b"SEED",
             audience_dir=adir,
             persist_count=2,
             seed=1,
         )
         # only the two most recent files appear
-        assert b"week14" not in result.corpus
-        assert b"week15" in result.corpus
-        assert b"week16" in result.corpus
+        assert b"week14" not in result.audience
+        assert b"week15" in result.audience
+        assert b"week16" in result.audience
 
     def test_seed_makes_reproducible(self, tmp_path):
         m_a = GPT(**SMALL_CONFIG)
         rebirth(
             model=m_a,
-            seed_corpus=b"x",
             audience_dir=tmp_path,
             persist_count=0,
             seed=99,
@@ -161,7 +152,6 @@ class TestRebirth:
         m_b = GPT(**SMALL_CONFIG)
         rebirth(
             model=m_b,
-            seed_corpus=b"x",
             audience_dir=tmp_path,
             persist_count=0,
             seed=99,
