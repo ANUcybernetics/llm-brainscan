@@ -167,7 +167,9 @@ The corpus has two parts:
 
 - **Seed corpus** — large, immutable, memory-mapped via `np.memmap` at
   startup. Loaded from `--data` (path to a single file). Sized for the
-  artwork (e.g., PG-19 at ~10 GB).
+  artwork (e.g., PG-19 at ~10 GB). On the Jetson the seed file lives on
+  the external SSD: `/ssd/brainscan/data/pg19.bin`. The dev machine
+  defaults to TinyShakespeare (auto-downloaded to `data/`).
 - **Audience buffer** — small, mutable, in-RAM (`TextBuffer`). Accumulates
   spoken input live and persists to `output/audience_input.txt`.
 
@@ -177,6 +179,10 @@ seed; the rest from the audience buffer. When the audience is shorter
 than `sequence_len + 1`, all rows fall back to the seed. This lets a
 small, growing audience contribution shape training meaningfully even
 when the seed is orders of magnitude larger.
+
+To build the PG-19 seed file:
+`mise exec -- uv run scripts/download_pg19.py /ssd/brainscan/data/pg19.bin`
+(the script declares its `datasets` dep inline, no project-level changes).
 
 ## Weekly rebirth
 
