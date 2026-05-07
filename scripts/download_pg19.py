@@ -5,7 +5,9 @@
 # ///
 """Stream PG-19 from HuggingFace and concatenate text into a single binary file.
 
-Run on the deployment machine where storage is plentiful, e.g.:
+Uses the `emozilla/pg19` parquet mirror (~100× faster than the original
+script-based `deepmind/pg19` dataset, same schema). Run on the deployment
+machine where storage is plentiful, e.g.:
     mise exec -- uv run scripts/download_pg19.py /ssd/brainscan/data/pg19.bin
 """
 
@@ -37,10 +39,9 @@ def main() -> None:
     args.output.parent.mkdir(parents=True, exist_ok=True)
 
     ds = load_dataset(
-        "deepmind/pg19",
+        "emozilla/pg19",
         split=args.split,
         streaming=True,
-        trust_remote_code=True,
     )
 
     t0 = time.time()
