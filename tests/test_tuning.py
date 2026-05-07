@@ -15,5 +15,5 @@ def test_drone_pitch_range():
     assert tuning.DRONE_MIN_HZ < tuning.DRONE_MAX_HZ
 
 
-def test_persist_days_default_is_a_week():
-    assert tuning.PERSIST_AUDIENCE_DAYS_DEFAULT == 7
+def test_persist_audience_cycles_default():
+    assert tuning.PERSIST_AUDIENCE_CYCLES_DEFAULT == 2

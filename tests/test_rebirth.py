@@ -76,7 +76,7 @@ class TestRebirth:
             model=model,
             seed_corpus=b"abcdef",
             audience_dir=tmp_path / "audience",
-            persist_days=0,
+            persist_count=0,
             seed=42,
         )
         assert isinstance(result, RebirthResult)
@@ -89,7 +89,7 @@ class TestRebirth:
             model=model,
             seed_corpus=b"abcdef",
             audience_dir=tmp_path / "audience",
-            persist_days=0,
+            persist_count=0,
             seed=42,
         )
         assert result.corpus.startswith(b"abcdef")
@@ -97,15 +97,15 @@ class TestRebirth:
     def test_rebirth_prepends_recent_logs(self, tmp_path):
         adir = tmp_path / "audience"
         adir.mkdir()
-        (adir / "2026-04-23.txt").write_text("oldold")
-        (adir / "2026-04-24.txt").write_text("newer")
+        (adir / "2026-04-13.txt").write_text("oldold")
+        (adir / "2026-04-20.txt").write_text("newer")
         model = GPT(**SMALL_CONFIG)
 
         result = rebirth(
             model=model,
             seed_corpus=b"SEED",
             audience_dir=adir,
-            persist_days=2,
+            persist_count=2,
             seed=1,
         )
         # most-recent persisted text appears, plus the seed
@@ -113,21 +113,41 @@ class TestRebirth:
         assert b"newer" in result.corpus
         assert b"SEED" in result.corpus
 
-    def test_persist_days_zero_seed_only(self, tmp_path):
+    def test_persist_count_zero_seed_only(self, tmp_path):
         adir = tmp_path / "audience"
         adir.mkdir()
-        (adir / "2026-04-23.txt").write_text("ignored")
+        (adir / "2026-04-20.txt").write_text("ignored")
         model = GPT(**SMALL_CONFIG)
 
         result = rebirth(
             model=model,
             seed_corpus=b"SEED",
             audience_dir=adir,
-            persist_days=0,
+            persist_count=0,
             seed=1,
         )
         assert b"ignored" not in result.corpus
         assert result.corpus == b"SEED"
+
+    def test_persist_count_caps_files_loaded(self, tmp_path):
+        adir = tmp_path / "audience"
+        adir.mkdir()
+        (adir / "2026-04-06.txt").write_text("week14")
+        (adir / "2026-04-13.txt").write_text("week15")
+        (adir / "2026-04-20.txt").write_text("week16")
+        model = GPT(**SMALL_CONFIG)
+
+        result = rebirth(
+            model=model,
+            seed_corpus=b"SEED",
+            audience_dir=adir,
+            persist_count=2,
+            seed=1,
+        )
+        # only the two most recent files appear
+        assert b"week14" not in result.corpus
+        assert b"week15" in result.corpus
+        assert b"week16" in result.corpus
 
     def test_seed_makes_reproducible(self, tmp_path):
         m_a = GPT(**SMALL_CONFIG)
@@ -135,7 +155,7 @@ class TestRebirth:
             model=m_a,
             seed_corpus=b"x",
             audience_dir=tmp_path,
-            persist_days=0,
+            persist_count=0,
             seed=99,
         )
         m_b = GPT(**SMALL_CONFIG)
@@ -143,7 +163,7 @@ class TestRebirth:
             model=m_b,
             seed_corpus=b"x",
             audience_dir=tmp_path,
-            persist_days=0,
+            persist_count=0,
             seed=99,
         )
         for p_a, p_b in zip(
@@ -153,61 +173,106 @@ class TestRebirth:
 
 
 class TestRebirthScheduler:
-    def test_due_when_clock_passes_target(self):
-        sched = RebirthScheduler(at_hh_mm="06:00")
-        # before 06:00 today
-        before = dt.datetime(2026, 4, 26, 5, 59, 59)
+    def test_fires_at_target_dow_and_time(self):
+        # Apr 27 2026 is Monday, iso-week 2026-W18
+        sched = RebirthScheduler(at_dow_hh_mm="MON 02:00")
+        before = dt.datetime(2026, 4, 27, 1, 59, 59)
         assert not sched.due(before)
-        # at 06:00 today (not yet armed)
-        first = dt.datetime(2026, 4, 26, 6, 0, 0)
+        first = dt.datetime(2026, 4, 27, 2, 0, 0)
+        assert sched.due(first)
+
+    def test_not_due_again_in_same_iso_week(self):
+        sched = RebirthScheduler(at_dow_hh_mm="MON 02:00")
+        first = dt.datetime(2026, 4, 27, 2, 0, 0)  # Mon W18
         assert sched.due(first)
         sched.mark_fired(first)
-        # not due immediately afterwards
-        assert not sched.due(dt.datetime(2026, 4, 26, 6, 0, 1))
-        # not due later that day
-        assert not sched.due(dt.datetime(2026, 4, 26, 23, 59, 0))
-        # due again the next day
-        assert sched.due(dt.datetime(2026, 4, 27, 6, 0, 0))
+        assert not sched.due(dt.datetime(2026, 4, 27, 2, 0, 1))
+        # Sunday of same iso-week
+        assert not sched.due(dt.datetime(2026, 5, 3, 23, 59, 0))
+
+    def test_due_again_next_iso_week(self):
+        sched = RebirthScheduler(at_dow_hh_mm="MON 02:00")
+        sched.mark_fired(dt.datetime(2026, 4, 27, 2, 0, 0))
+        # Mon of next iso-week (W19)
+        assert sched.due(dt.datetime(2026, 5, 4, 2, 0, 0))
+
+    def test_due_late_if_missed_within_week(self):
+        # System down at MON 02:00; comes up Wed — should still fire this week
+        sched = RebirthScheduler(at_dow_hh_mm="MON 02:00")
+        wed = dt.datetime(2026, 4, 29, 14, 0, 0)
+        assert sched.due(wed)
+
+    def test_target_day_before_target_time_not_due(self):
+        sched = RebirthScheduler(at_dow_hh_mm="WED 14:00")
+        early_wed = dt.datetime(2026, 4, 29, 13, 59, 59)
+        assert not sched.due(early_wed)
+
+    def test_dow_case_insensitive(self):
+        sched = RebirthScheduler(at_dow_hh_mm="mon 02:00")
+        assert sched.due(dt.datetime(2026, 4, 27, 2, 0, 0))
 
     def test_disabled_never_due(self):
-        sched = RebirthScheduler(at_hh_mm=None)
-        assert not sched.due(dt.datetime(2026, 4, 26, 6, 0, 0))
+        sched = RebirthScheduler(at_dow_hh_mm=None)
+        assert not sched.due(dt.datetime(2026, 4, 27, 2, 0, 0))
 
-    def test_invalid_format_raises(self):
+    def test_invalid_dow_raises(self):
         import pytest
         with pytest.raises(ValueError):
-            RebirthScheduler(at_hh_mm="boom")
+            RebirthScheduler(at_dow_hh_mm="XYZ 02:00")
+
+    def test_missing_dow_raises(self):
+        import pytest
+        with pytest.raises(ValueError):
+            RebirthScheduler(at_dow_hh_mm="02:00")
+
+    def test_invalid_time_raises(self):
+        import pytest
+        with pytest.raises(ValueError):
+            RebirthScheduler(at_dow_hh_mm="MON 25:00")
+
+    def test_garbage_raises(self):
+        import pytest
+        with pytest.raises(ValueError):
+            RebirthScheduler(at_dow_hh_mm="boom")
 
 
 class TestRebirthSchedulerPersistence:
-    def test_state_path_persists_last_fired_across_instances(self, tmp_path):
+    def test_state_path_persists_last_fired_iso_week(self, tmp_path):
         state_path = tmp_path / "rebirth.last"
-        sched_a = RebirthScheduler(at_hh_mm="06:00", state_path=state_path)
-        first = dt.datetime(2026, 4, 26, 6, 0, 0)
+        sched_a = RebirthScheduler(
+            at_dow_hh_mm="MON 02:00", state_path=state_path
+        )
+        first = dt.datetime(2026, 4, 27, 2, 0, 0)  # W18
         assert sched_a.due(first)
         sched_a.mark_fired(first)
-        # new process: same state path, same day -> not due
-        sched_b = RebirthScheduler(at_hh_mm="06:00", state_path=state_path)
-        assert not sched_b.due(dt.datetime(2026, 4, 26, 6, 0, 1))
-        # next day -> due again
-        assert sched_b.due(dt.datetime(2026, 4, 27, 6, 0, 0))
+        # new process: same state path, same iso-week -> not due
+        sched_b = RebirthScheduler(
+            at_dow_hh_mm="MON 02:00", state_path=state_path
+        )
+        assert not sched_b.due(dt.datetime(2026, 4, 30, 12, 0, 0))
+        # next iso-week -> due again
+        assert sched_b.due(dt.datetime(2026, 5, 4, 2, 0, 0))
 
     def test_no_state_path_falls_back_to_in_memory(self):
-        sched = RebirthScheduler(at_hh_mm="06:00")
-        assert sched.due(dt.datetime(2026, 4, 26, 6, 0, 0))
+        sched = RebirthScheduler(at_dow_hh_mm="MON 02:00")
+        assert sched.due(dt.datetime(2026, 4, 27, 2, 0, 0))
 
     def test_state_path_written_on_mark_fired(self, tmp_path):
         state_path = tmp_path / "rebirth.last"
-        sched = RebirthScheduler(at_hh_mm="06:00", state_path=state_path)
-        sched.mark_fired(dt.datetime(2026, 4, 26, 6, 0, 0))
-        assert state_path.read_text().strip() == "2026-04-26"
+        sched = RebirthScheduler(
+            at_dow_hh_mm="MON 02:00", state_path=state_path
+        )
+        sched.mark_fired(dt.datetime(2026, 4, 27, 2, 0, 0))
+        assert state_path.read_text().strip() == "2026-W18"
 
     def test_corrupt_state_file_ignored(self, tmp_path):
         state_path = tmp_path / "rebirth.last"
-        state_path.write_text("not-a-date")
-        sched = RebirthScheduler(at_hh_mm="06:00", state_path=state_path)
-        # should not raise and last_fired_date should be None
-        assert sched.due(dt.datetime(2026, 4, 26, 6, 0, 0))
+        state_path.write_text("not-a-week")
+        sched = RebirthScheduler(
+            at_dow_hh_mm="MON 02:00", state_path=state_path
+        )
+        # should not raise and should treat as never-fired
+        assert sched.due(dt.datetime(2026, 4, 27, 2, 0, 0))
 
 
 class TestRebirthFadeStateMachine:

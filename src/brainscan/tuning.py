@@ -74,8 +74,8 @@ CURSOR_LABEL_PERIOD_SECONDS = 3.0
 REBIRTH_FADE_DURATION_SECONDS = 2.0
 """Seconds for the fade-out and fade-in halves of the rebirth transition."""
 
-PERSIST_AUDIENCE_DAYS_DEFAULT = 7
-"""Default for --persist-audience-days CLI flag."""
+PERSIST_AUDIENCE_CYCLES_DEFAULT = 2
+"""Default for --persist-audience-cycles CLI flag (each cycle ≈ one week of audience)."""
 
 # --- Layout chrome --------------------------------------------------
 

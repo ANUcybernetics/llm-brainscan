@@ -325,19 +325,19 @@ def main() -> None:
         "--rebirth-at",
         type=str,
         default=None,
-        help="Daily rebirth time HH:MM (24h, local). Default off.",
+        help="Weekly rebirth time 'DOW HH:MM' (e.g., 'MON 02:00'). Default off.",
     )
     parser.add_argument(
-        "--persist-audience-days",
+        "--persist-audience-cycles",
         type=int,
-        default=tuning.PERSIST_AUDIENCE_DAYS_DEFAULT,
-        help="Number of past audience-log days to prepend on rebirth (0 to disable)",
+        default=tuning.PERSIST_AUDIENCE_CYCLES_DEFAULT,
+        help="Number of past audience-log cycles (~weeks) to prepend on rebirth (0 to disable)",
     )
     parser.add_argument(
         "--seed",
         type=int,
         default=0,
-        help="Base seed for daily rebirth (per-day seed = hash(date)+base)",
+        help="Base seed for weekly rebirth (per-week seed = hash(iso-week+base))",
     )
     args = parser.parse_args()
 
@@ -479,7 +479,7 @@ def main() -> None:
             return next(gen_iter)
 
         rebirth_sched = RebirthScheduler(
-            at_hh_mm=args.rebirth_at,
+            at_dow_hh_mm=args.rebirth_at,
             state_path=output_dir / "rebirth.last",
         )
         tts = TTSEngine(enabled=args.speak)
@@ -565,16 +565,24 @@ def main() -> None:
                 )
                 if should_perform:
                     now_dt = dt.datetime.now()
-                    yesterday = now_dt.date() - dt.timedelta(days=1)
-                    rotate_audience_log(audience_log, output_dir / "audience", yesterday)
+                    iso = now_dt.date().isocalendar()
+                    iso_key = f"{iso.year}-W{iso.week:02d}"
+                    # Rotate accumulated audience log under the Monday of the
+                    # week that just closed (the model that just died).
+                    prev_week_monday = dt.date.fromisocalendar(
+                        iso.year, iso.week, 1
+                    ) - dt.timedelta(days=7)
+                    rotate_audience_log(
+                        audience_log, output_dir / "audience", prev_week_monday
+                    )
                     res = rebirth(
                         model=model,
                         seed_corpus=raw_data,
                         audience_dir=output_dir / "audience",
-                        persist_days=args.persist_audience_days,
+                        persist_count=args.persist_audience_cycles,
                         seed=int.from_bytes(
                             hashlib.sha256(
-                                f"{now_dt.date().isoformat()}-{args.seed}".encode()
+                                f"{iso_key}-{args.seed}".encode()
                             ).digest()[:4],
                             "big",
                         ),
@@ -583,8 +591,8 @@ def main() -> None:
                     optimiser = torch.optim.AdamW(model.parameters(), lr=args.lr)
                     rebirth_sched.mark_fired(now_dt)
                     (output_dir / "rebirth.log").open("a").write(
-                        f"{now_dt.date().isoformat()} seed={res.seed}"
-                        f" persist_days={args.persist_audience_days}\n"
+                        f"{iso_key} seed={res.seed}"
+                        f" persist_cycles={args.persist_audience_cycles}\n"
                     )
                     _show_event(f"dawn {now_dt.strftime('%H:%M')}", now=now_t)
 

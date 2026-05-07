@@ -57,7 +57,7 @@ tests/
 ├── test_conversation.py   # state machine transitions, timing, cooldown
 ├── test_rebirth.py        # rotate_audience_log, rebirth(), RebirthScheduler
 ├── test_audio_drone.py    # DroneOscillator loss-to-pitch mapping
-└── test_train.py          # train loop wiring, smoke test, daily-seed reproducibility
+└── test_train.py          # train loop wiring, smoke test, weekly-seed reproducibility
 ```
 
 ## Key constraints
@@ -161,21 +161,27 @@ call, and returns events the caller acts on (`speak_events`,
 Every committed audience utterance is also appended to the training
 `TextBuffer`, so conversation literally feeds the model's future selves.
 
-## Daily rebirth
+## Weekly rebirth
 
-`--rebirth-at HH:MM` schedules a daily reset. At rebirth time:
+`--rebirth-at "DOW HH:MM"` (e.g., `"MON 02:00"`) schedules a weekly reset.
+At rebirth time:
 
-1. The audience log file is rotated to `output/audience/YYYY-MM-DD.txt`.
+1. The audience log file is rotated to `output/audience/YYYY-MM-DD.txt`,
+   dated to the Monday of the week that just closed.
 2. The model is re-initialised via `model.apply(model._init_weights)` after
-   `torch.manual_seed(daily_seed)` where `daily_seed = sha256(date+seed)[:4]`
-   (reproducible).
-3. The training corpus is rebuilt as `last_N_days_audience + seed_corpus`
-   where N comes from `--persist-audience-days` (default 7, 0 disables).
+   `torch.manual_seed(weekly_seed)` where
+   `weekly_seed = sha256(iso_week_key+seed)[:4]` and `iso_week_key` is e.g.
+   `"2026-W18"` (reproducible per ISO week).
+3. The training corpus is rebuilt as `last_N_cycles_audience + seed_corpus`
+   where N comes from `--persist-audience-cycles` (default 2, 0 disables);
+   each cycle file is roughly one week of audience speech.
 4. The optimiser is rebuilt fresh.
 
-Returning visitors meaningfully shape the long-term character of the piece
-across weeks even though each day's model is "young". The daily seed is
-logged to `output/rebirth.log`.
+Each rebirth fires at most once per ISO week. If the system is down at the
+target moment, it fires the next time the loop ticks within the same ISO
+week. Returning visitors over a week witness a single brain growing; across
+weeks the persisted audience layers shape the long-term character. The
+weekly seed and cycle is logged to `output/rebirth.log`.
 
 ## Speech-to-text
 
@@ -211,7 +217,7 @@ re-trigger on the model's own playback.
   conversation's lane buffers and caption state into renderer payloads.
 - `Conversation.step(now, listener_snapshot, token_fn)` --- advance the
   state machine; returns `StepEvents` describing requested side effects.
-- `rebirth(model, seed_corpus, audience_dir, persist_days, seed)` --- reset
+- `rebirth(model, seed_corpus, audience_dir, persist_count, seed)` --- reset
   weights and rebuild corpus; returns `RebirthResult(corpus, seed)`.
 
 ## CLI flags
@@ -221,10 +227,12 @@ re-trigger on the model's own playback.
 - `--no-mic` — disable speech listener.
 - `--speak` — enable TTS for model responses (requires piper extra).
 - `--drone` — enable sub-bass drone tracking loss (atmospheric extra).
-- `--rebirth-at HH:MM` — daily rebirth time (24h, local).
-- `--persist-audience-days N` — N past audience-log days prepended to corpus
-  on rebirth (default 7, 0 disables).
-- `--seed N` — base seed for daily rebirth (per-day seed = sha256(date+N)).
+- `--rebirth-at "DOW HH:MM"` — weekly rebirth time (e.g., `"MON 02:00"`,
+  24h local). Default off.
+- `--persist-audience-cycles N` — N past audience-log cycles (~weeks)
+  prepended to corpus on rebirth (default 2, 0 disables).
+- `--seed N` — base seed for weekly rebirth
+  (per-week seed = sha256(iso-week+N)).
 
 Plus the existing model/training knobs (`--n-layer`, `--n-head`, `--n-embd`,
 `--sequence-len`, `--batch-size`, `--lr`, `--steps`, `--snapshot-every`,
