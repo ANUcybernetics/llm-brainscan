@@ -22,7 +22,7 @@ def _encode_text(text: str) -> list[int]:
 
 @dataclass
 class LaneBuffer:
-    capacity: int = 320
+    capacity: int = 240
     _chars: list[int] = field(default_factory=list, init=False, repr=False)
     _attrs: list[int] = field(default_factory=list, init=False, repr=False)
     _probs: list[float] = field(default_factory=list, init=False, repr=False)

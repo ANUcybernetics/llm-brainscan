@@ -287,8 +287,8 @@ class TestCaretRendering:
         probs = np.zeros(cap, dtype=np.float32)
         frame = LaneFrame(chars=chars, attrs_or_probs=probs, count=0, caret_col=1)
         img = renderer.render(weights, model=frame)
-        # column 1 starts at x=24; leftmost 6px should carry the caret colour
-        caret_region = img[:, 24:30, :3]
+        # column 1 starts at x=LANE_CELL_W=32; leftmost 6px should carry the caret colour
+        caret_region = img[:, 32:38, :3]
         # caret colour (0.85, 0.81, 0.94) → ~217/207/240 in uint8
         assert caret_region.max() > 100, (
             f"caret not visible; max={caret_region.max()}"

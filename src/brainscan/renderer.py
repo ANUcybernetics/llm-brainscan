@@ -25,9 +25,12 @@ from brainscan.layout import TextOverlay
 SHADER_SOURCE = """
 const ATTR_PARTIAL: u32 = 1u;
 const ATTR_SOURCE_TAG: u32 = 2u;
-const LANE_SCALE: u32 = 3u;
-const LANE_CELL_W: u32 = 24u;
-const LANE_CELL_H: u32 = 48u;
+const LANE_SCALE: u32 = 4u;
+const LANE_CELL_W: u32 = 32u;
+const LANE_CELL_H: u32 = 64u;
+const CAPTIONS_SCALE: u32 = 2u;
+const CAPTIONS_CELL_W: u32 = 16u;
+const CAPTIONS_CELL_H: u32 = 32u;
 
 struct Uniforms {
     width: u32,
@@ -222,19 +225,17 @@ fn captions_band(px: u32, py: u32) -> vec4<f32> {
         return vec4<f32>(-1.0, 0.0, 0.0, 1.0);
     }
     let cap_py = py - uniforms.captions_y;
-    let cell_w = 8u;
-    let cell_h = 16u;
-    let col = px / cell_w;
-    let row = cap_py / cell_h;
-    let cols = uniforms.width / cell_w;
+    let col = px / CAPTIONS_CELL_W;
+    let row = cap_py / CAPTIONS_CELL_H;
+    let cols = uniforms.width / CAPTIONS_CELL_W;
     let char_pos = row * cols + col;
     let bg = vec4<f32>(0.01, 0.01, 0.01, 1.0);
     if char_pos >= uniforms.captions_count {
         return bg;
     }
     let glyph = captions_chars[char_pos];
-    let gx = px % cell_w;
-    let gy = cap_py % cell_h;
+    let gx = (px % CAPTIONS_CELL_W) / CAPTIONS_SCALE;
+    let gy = (cap_py % CAPTIONS_CELL_H) / CAPTIONS_SCALE;
     if font_pixel(glyph, gx, gy) {
         return vec4<f32>(0.40, 0.40, 0.42, 1.0);
     }
@@ -286,10 +287,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 COLORMAP_DIVERGING = 0
 COLORMAP_THERMAL = 1
 
-LANE_SCALE = 3
-LANE_GLYPH_W = 8 * LANE_SCALE   # 24 px
-LANE_GLYPH_H = 16 * LANE_SCALE  # 48 px
-CAPTIONS_GLYPH_W = 8            # 1× scale
+LANE_SCALE = 4
+LANE_GLYPH_W = 8 * LANE_SCALE   # 32 px
+LANE_GLYPH_H = 16 * LANE_SCALE  # 64 px
+CAPTIONS_SCALE = 2
+CAPTIONS_GLYPH_W = 8 * CAPTIONS_SCALE   # 16 px
+CAPTIONS_GLYPH_H = 16 * CAPTIONS_SCALE  # 32 px
 
 _UNIFORM_DTYPE = np.dtype([
     ("width", np.uint32),

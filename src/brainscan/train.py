@@ -89,9 +89,9 @@ class PulseState:
             return self._value
 
 
-AUDIENCE_HEIGHT = 90
-MODEL_LANE_HEIGHT = 90
-CAPTIONS_HEIGHT = 12
+AUDIENCE_HEIGHT = 96
+MODEL_LANE_HEIGHT = 96
+CAPTIONS_HEIGHT = 32
 
 
 def get_device() -> torch.device:

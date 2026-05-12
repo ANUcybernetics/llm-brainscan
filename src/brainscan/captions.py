@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-CAPTIONS_COLS = 960
+CAPTIONS_COLS = 480
 LEFT_ZONE = CAPTIONS_COLS // 2 - 1
 RIGHT_ZONE = CAPTIONS_COLS // 2 - 1
 

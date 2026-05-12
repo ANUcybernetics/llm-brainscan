@@ -3,7 +3,7 @@
 ## Project overview
 
 Visualise a character-level GPT's weight matrices during training on an 8K
-display (one pixel per parameter). The model has ~30M params; the bottom 192px
+display (one pixel per parameter). The model has ~30M params; the bottom 224px
 of the display is a three-band text strip carrying a live conversation between
 the audience (via mic) and the model (via streaming generation), plus a
 whispered captions footer. The piece resets at a configured wall-clock time
@@ -31,7 +31,7 @@ src/brainscan/
 │                   #   (with partial_callback + speech_end_callback)
 ├── tts.py          # TTSEngine wrapper around piper (optional, no-op when off)
 ├── lanes.py        # LaneBuffer circular char buffer (partial/committed)
-├── captions.py     # CaptionsState, compose_caption() for the 12px footer
+├── captions.py     # CaptionsState, compose_caption() for the 32px footer
 ├── conversation.py # MUSE/LISTENING/RESPONDING state machine, Conversation.step()
 ├── rebirth.py      # rotate_audience_log(), rebirth(), RebirthScheduler
 ├── audio_drone.py  # Optional sub-bass DroneOscillator tracking loss
@@ -81,24 +81,24 @@ holding the centred section name (`EMBED`, `BLK 0`, …). All chrome is
 zero-padded so overlays never occlude weight data.
 
 The default model is `n_embd=540`, which yields ~28 M parameters and leaves
-margin for the new chrome inside the 4128 px weight region.
+margin for the new chrome inside the 4096 px weight region.
 
-The bottom 192px is split into three horizontal bands:
+The bottom 224px is split into three horizontal bands:
 
 ```
-y = 4128 ───────────────────────────────────────
-         AUDIENCE LANE   90px   3× scale, 320 cols × 1 row, warm cream
-y = 4218 ───────────────────────────────────────
-         MODEL LANE      90px   3× scale, 320 cols × 1 row, cool ramp
-y = 4308 ───────────────────────────────────────
-         CAPTIONS FOOTER 12px   1× scale, 960 chars, dim grey
+y = 4096 ───────────────────────────────────────
+         AUDIENCE LANE   96px   4× scale, 240 cols × 1 row, warm cream
+y = 4192 ───────────────────────────────────────
+         MODEL LANE      96px   4× scale, 240 cols × 1 row, cool ramp
+y = 4288 ───────────────────────────────────────
+         CAPTIONS FOOTER 32px   2× scale, 480 chars, dim grey
 y = 4320 ───────────────────────────────────────
 ```
 
-Each lane is a single row of 320 chars at 3× scale (24×48 px glyphs); the right
+Each lane is a single row of 240 chars at 4× scale (32×64 px glyphs); the right
 edge is "now" and older chars drift left. Sub-pixel scrolling is driven by per-
-lane `*_offset_px` uniforms. The captions footer is unscrolled and rendered
-1× scale.
+lane `*_offset_px` uniforms. The captions footer is unscrolled and rendered at
+2× scale (16×32 px glyphs).
 
 The weight layout is defined by `Section` objects in `layout.py`. The
 `compute_layout` function assigns pixel coordinates; `layout_to_flat_order`

@@ -4,9 +4,28 @@ from brainscan.lanes import LaneBuffer, ATTR_PARTIAL, ATTR_SOURCE_TAG
 
 
 class TestLaneBufferConstruction:
-    def test_default_capacity_is_320(self):
+    def test_default_capacity_is_240(self):
         buf = LaneBuffer()
-        assert buf.capacity == 320
+        assert buf.capacity == 240
+
+    def test_default_capacity_matches_8k_renderer_lane_capacity(self):
+        """LaneBuffer.snapshot() writes capacity*4 bytes into the renderer's
+        lane buffer, which is sized from RenderConfig.lane_capacity. A
+        mismatch silently overflows on the first frame (wgpu Invalid
+        data_length); pin them together.
+        """
+        from brainscan.layout import HEIGHT, WIDTH
+        from brainscan.renderer import RenderConfig
+        from brainscan.train import AUDIENCE_HEIGHT, CAPTIONS_HEIGHT, MODEL_LANE_HEIGHT
+
+        cfg = RenderConfig(
+            width=WIDTH,
+            height=HEIGHT,
+            audience_height=AUDIENCE_HEIGHT,
+            model_height=MODEL_LANE_HEIGHT,
+            captions_height=CAPTIONS_HEIGHT,
+        )
+        assert LaneBuffer().capacity == cfg.lane_capacity
 
     def test_custom_capacity(self):
         buf = LaneBuffer(capacity=64)
