@@ -15,8 +15,8 @@ class ScriptedListener:
 
     _iter: int = 0
     _committed: list[str] = field(default_factory=list)
-    _partial_callback: Callable[[str], None] | None = None
-    _speech_end_callback: Callable[[], None] | None = None
+    partial_callback: Callable[[str], None] | None = None
+    speech_end_callback: Callable[[], None] | None = None
 
     def start(self) -> None:
         pass
@@ -28,12 +28,12 @@ class ScriptedListener:
         # Process script entries scheduled for this iteration
         for it, action, payload in self.script:
             if it == self._iter:
-                if action == "partial" and self._partial_callback is not None:
-                    self._partial_callback(payload)
+                if action == "partial" and self.partial_callback is not None:
+                    self.partial_callback(payload)
                 elif action == "commit":
                     self._committed.append(payload)
-                    if self._speech_end_callback is not None:
-                        self._speech_end_callback()
+                    if self.speech_end_callback is not None:
+                        self.speech_end_callback()
         self._iter += 1
         items = list(self._committed)
         self._committed.clear()

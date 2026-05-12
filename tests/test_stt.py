@@ -1,5 +1,6 @@
 import sys
 import threading
+import time
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -24,6 +25,21 @@ def listener():
     return SpeechListener(model_size="tiny", device="cpu")
 
 
+def _mock_model(text: str = "hello") -> MagicMock:
+    seg = MagicMock()
+    seg.text = f" {text} "
+    model = MagicMock()
+    model.transcribe.return_value = ([seg], None)
+    return model
+
+
+def _drain_partials(listener: SpeechListener, timeout: float = 1.0) -> None:
+    """Wait for any in-flight partial worker thread to finish."""
+    deadline = time.time() + timeout
+    while listener._partial_pending.is_set() and time.time() < deadline:
+        time.sleep(0.005)
+
+
 class TestSpeechDetection:
     def test_silence_not_detected(self):
         silence = np.zeros(1600, dtype=np.float32)
@@ -43,28 +59,19 @@ class TestSpeechDetection:
 
 class TestTranscribe:
     def test_transcribes_audio(self):
-        mock_segment = MagicMock()
-        mock_segment.text = " hello world "
-        mock_model = MagicMock()
-        mock_model.transcribe.return_value = ([mock_segment], None)
-
         audio = np.random.randn(3200).astype(np.float32)
-        result = transcribe(mock_model, audio)
+        result = transcribe(_mock_model("hello world"), audio)
         assert result == "hello world"
 
     def test_empty_transcription(self):
         mock_model = MagicMock()
         mock_model.transcribe.return_value = ([], None)
-
-        audio = np.random.randn(3200).astype(np.float32)
-        result = transcribe(mock_model, audio)
+        result = transcribe(mock_model, np.zeros(3200, dtype=np.float32))
         assert result == ""
 
     def test_multiple_segments_joined(self):
-        seg1 = MagicMock()
-        seg1.text = " hello "
-        seg2 = MagicMock()
-        seg2.text = " world "
+        seg1 = MagicMock(); seg1.text = " hello "
+        seg2 = MagicMock(); seg2.text = " world "
         mock_model = MagicMock()
         mock_model.transcribe.return_value = ([seg1, seg2], None)
 
@@ -84,6 +91,10 @@ class TestSpeechConfig:
         assert cfg.min_samples == int(0.5 * SAMPLE_RATE)
         assert cfg.max_samples == int(30.0 * SAMPLE_RATE)
         assert cfg.chunk_samples == int(CHUNK_SECONDS * SAMPLE_RATE)
+
+    def test_audio_device_default_none(self):
+        assert SpeechConfig().audio_device is None
+        assert SpeechConfig(audio_device=3).audio_device == 3
 
 
 class TestGetText:
@@ -106,67 +117,51 @@ class TestGetText:
 
 class TestDoTranscribe:
     def test_transcribes_and_queues(self, listener):
-        mock_segment = MagicMock()
-        mock_segment.text = " hello world "
-        mock_model = MagicMock()
-        mock_model.transcribe.return_value = ([mock_segment], None)
-        listener._model = mock_model
-
-        chunks = [np.random.randn(3200).astype(np.float32)]
-        listener._do_transcribe(chunks)
-
-        result = listener.get_text()
-        assert result == ["hello world"]
+        listener._model = _mock_model("hello world")
+        listener._do_transcribe([np.random.randn(3200).astype(np.float32)])
+        assert listener.get_text() == ["hello world"]
 
     def test_empty_transcription_not_queued(self, listener):
         mock_model = MagicMock()
         mock_model.transcribe.return_value = ([], None)
         listener._model = mock_model
-
-        chunks = [np.random.randn(3200).astype(np.float32)]
-        listener._do_transcribe(chunks)
-
+        listener._do_transcribe([np.random.randn(3200).astype(np.float32)])
         assert listener.get_text() == []
-
-    def test_multiple_segments_joined(self, listener):
-        seg1 = MagicMock()
-        seg1.text = " hello "
-        seg2 = MagicMock()
-        seg2.text = " world "
-        mock_model = MagicMock()
-        mock_model.transcribe.return_value = ([seg1, seg2], None)
-        listener._model = mock_model
-
-        listener._do_transcribe([np.zeros(3200, dtype=np.float32)])
-        assert listener.get_text() == ["hello world"]
 
 
 class TestStartStop:
-    def test_start_creates_thread(self, listener):
+    def test_start_creates_both_threads(self, listener):
         gate = threading.Event()
 
-        def blocking_run():
+        def blocking() -> None:
             gate.wait(timeout=5.0)
 
-        with patch.object(listener, "_run", side_effect=blocking_run):
+        with patch.object(listener, "_run_audio", side_effect=blocking), \
+             patch.object(listener, "_run_processor", side_effect=blocking):
             listener.start()
-            assert listener._thread is not None
-            assert listener._thread.is_alive()
+            assert listener._audio_thread is not None
+            assert listener._processor_thread is not None
+            assert listener._audio_thread.is_alive()
+            assert listener._processor_thread.is_alive()
             gate.set()
             listener.stop()
-            assert listener._thread is None
+            assert listener._audio_thread is None
+            assert listener._processor_thread is None
 
     def test_start_idempotent(self, listener):
         gate = threading.Event()
 
-        def blocking_run():
+        def blocking() -> None:
             gate.wait(timeout=5.0)
 
-        with patch.object(listener, "_run", side_effect=blocking_run):
+        with patch.object(listener, "_run_audio", side_effect=blocking), \
+             patch.object(listener, "_run_processor", side_effect=blocking):
             listener.start()
-            thread1 = listener._thread
+            audio_t = listener._audio_thread
+            proc_t = listener._processor_thread
             listener.start()
-            assert listener._thread is thread1
+            assert listener._audio_thread is audio_t
+            assert listener._processor_thread is proc_t
             gate.set()
             listener.stop()
 
@@ -174,57 +169,43 @@ class TestStartStop:
         listener.stop()
 
 
-class TestChunkSeconds:
-    def test_default_chunk_seconds(self):
-        listener = SpeechListener(model_size="tiny")
-        assert listener.config.chunk_seconds == CHUNK_SECONDS
+class TestRunAudio:
+    """Verify the audio thread reads the configured chunk size and pushes to the queue."""
 
-    def test_custom_chunk_seconds(self):
-        listener = SpeechListener(model_size="tiny", chunk_seconds=1.0)
-        assert listener.config.chunk_seconds == 1.0
-
-    def test_chunk_seconds_affects_audio_read_size(self):
-        chunk_sec = 1.0
-        chunk_samples = int(chunk_sec * SAMPLE_RATE)
-        speech_chunk = np.full((chunk_samples, 1), 0.5, dtype=np.float32)
-        silence_chunk = np.zeros((chunk_samples, 1), dtype=np.float32)
-
-        read_count = 0
+    def _drive_audio(self, listener: SpeechListener, chunks: list[np.ndarray]) -> MagicMock:
+        counter = [0]
 
         def mock_read(n):
-            nonlocal read_count
-            read_count += 1
-            assert n == chunk_samples
-            if read_count == 1:
-                return speech_chunk, False
-            if read_count == 2:
-                return silence_chunk, False
+            assert n == listener.config.chunk_samples
+            i = counter[0]
+            counter[0] += 1
+            if i < len(chunks):
+                return chunks[i], False
             listener._stop_event.set()
-            return silence_chunk, False
+            return chunks[-1], False
 
         mock_stream = MagicMock()
         mock_stream.read = mock_read
         mock_stream.__enter__ = MagicMock(return_value=mock_stream)
         mock_stream.__exit__ = MagicMock(return_value=False)
+        input_stream = MagicMock(return_value=mock_stream)
+        sys.modules["sounddevice"].InputStream = input_stream  # type: ignore[attr-defined]
 
-        sd_mock = sys.modules["sounddevice"]
-        sd_mock.InputStream = MagicMock(return_value=mock_stream)  # type: ignore[attr-defined]
+        listener._run_audio()
+        return input_stream
 
-        listener = SpeechListener(
-            model_size="tiny", chunk_seconds=chunk_sec
-        )
+    def test_default_chunk_seconds_used(self):
+        listener = SpeechListener(model_size="tiny")
+        assert listener.config.chunk_seconds == CHUNK_SECONDS
 
-        mock_segment = MagicMock()
-        mock_segment.text = "short chunk"
-        mock_model = MagicMock()
-        mock_model.transcribe.return_value = ([mock_segment], None)
+    def test_custom_chunk_seconds_drives_stream_read(self):
+        listener = SpeechListener(model_size="tiny", chunk_seconds=1.0)
+        chunk_samples = listener.config.chunk_samples
+        speech = np.full((chunk_samples, 1), 0.5, dtype=np.float32)
+        input_stream = self._drive_audio(listener, [speech, speech])
 
-        with patch.object(listener, "_load_model"):
-            listener._model = mock_model
-            listener._run()
-
-        assert listener.get_text() == ["short chunk"]
-        sd_mock.InputStream.assert_called_once_with(
+        assert listener._audio_queue.qsize() >= 2
+        input_stream.assert_called_once_with(
             samplerate=SAMPLE_RATE,
             channels=1,
             dtype="float32",
@@ -232,166 +213,147 @@ class TestChunkSeconds:
             device=None,
         )
 
-
-class TestAudioLoop:
-    def test_speech_then_silence_triggers_transcription(self):
-        chunk_samples = int(CHUNK_SECONDS * SAMPLE_RATE)
-        speech_chunk = np.full((chunk_samples, 1), 0.5, dtype=np.float32)
-        silence_chunk = np.zeros((chunk_samples, 1), dtype=np.float32)
-
-        read_count = 0
-
-        def mock_read(n):
-            nonlocal read_count
-            read_count += 1
-            if read_count <= 2:
-                return speech_chunk, False
-            if read_count == 3:
-                return silence_chunk, False
-            listener._stop_event.set()
-            return silence_chunk, False
-
-        mock_stream = MagicMock()
-        mock_stream.read = mock_read
-        mock_stream.__enter__ = MagicMock(return_value=mock_stream)
-        mock_stream.__exit__ = MagicMock(return_value=False)
-
-        sd_mock = sys.modules["sounddevice"]
-        sd_mock.InputStream = MagicMock(return_value=mock_stream)  # type: ignore[attr-defined]
-
-        listener = SpeechListener(model_size="tiny", device="cpu")
-
-        mock_segment = MagicMock()
-        mock_segment.text = "transcribed"
-        mock_model = MagicMock()
-        mock_model.transcribe.return_value = ([mock_segment], None)
-
-        with patch.object(listener, "_load_model"):
-            listener._model = mock_model
-            listener._run()
-
-        result = listener.get_text()
-        assert result == ["transcribed"]
-        assert mock_model.transcribe.call_count == 1
+    def test_audio_device_passed_through(self):
+        listener = SpeechListener(model_size="tiny", audio_device=7)
+        chunk_samples = listener.config.chunk_samples
+        chunk = np.zeros((chunk_samples, 1), dtype=np.float32)
+        input_stream = self._drive_audio(listener, [chunk])
+        _, kwargs = input_stream.call_args
+        assert kwargs["device"] == 7
 
 
-class TestPartialCallback:
+class TestProcessChunk:
+    """Drive the per-chunk VAD/buffering state machine deterministically."""
+
+    def _make_listener(self, **kwargs) -> SpeechListener:
+        listener = SpeechListener(model_size="tiny", **kwargs)
+        listener._model = _mock_model("transcribed")
+        return listener
+
+    def _speech(self, listener: SpeechListener) -> np.ndarray:
+        return np.full(listener.config.chunk_samples, 0.5, dtype=np.float32)
+
+    def _silence(self, listener: SpeechListener) -> np.ndarray:
+        return np.zeros(listener.config.chunk_samples, dtype=np.float32)
+
+    def test_silence_alone_does_nothing(self):
+        listener = self._make_listener()
+        listener._process_chunk(self._silence(listener), now=0.0)
+        assert listener.get_text() == []
+        assert not listener._in_speech
+
+    def test_speech_then_silence_commits_transcription(self):
+        listener = self._make_listener()
+        # Need ≥ min_speech_seconds (0.5s = 8000 samples). At 0.2s chunks
+        # that's 3 chunks.
+        for i in range(3):
+            listener._process_chunk(self._speech(listener), now=0.2 * i)
+        listener._process_chunk(self._silence(listener), now=0.6)
+        assert listener.get_text() == ["transcribed"]
+
+    def test_speech_too_brief_is_discarded(self):
+        listener = self._make_listener()
+        # 1 chunk = 0.2s = 3200 samples < min_samples (8000) → no transcribe
+        listener._process_chunk(self._speech(listener), now=0.0)
+        listener._process_chunk(self._silence(listener), now=0.2)
+        assert listener.get_text() == []
+
     def test_partial_callback_invoked_during_speech(self):
-        chunk_samples = int(CHUNK_SECONDS * SAMPLE_RATE)
-        speech_chunk = np.full((chunk_samples, 1), 0.5, dtype=np.float32)
-        silence_chunk = np.zeros((chunk_samples, 1), dtype=np.float32)
-
-        read_count = 0
-
-        def mock_read(n):
-            nonlocal read_count
-            read_count += 1
-            if read_count <= 3:
-                return speech_chunk, False
-            if read_count == 4:
-                return silence_chunk, False
-            listener._stop_event.set()
-            return silence_chunk, False
-
-        mock_stream = MagicMock()
-        mock_stream.read = mock_read
-        mock_stream.__enter__ = MagicMock(return_value=mock_stream)
-        mock_stream.__exit__ = MagicMock(return_value=False)
-        sd_mock = sys.modules["sounddevice"]
-        sd_mock.InputStream = MagicMock(return_value=mock_stream)
-
         partials: list[str] = []
-        listener = SpeechListener(
-            model_size="tiny",
-            device="cpu",
-            partial_callback=partials.append,
-            partial_interval_seconds=0.0,
-        )
+        listener = self._make_listener(partial_interval_seconds=0.0)
+        listener.partial_callback = partials.append
 
-        seg = MagicMock()
-        seg.text = "hello"
-        mock_model = MagicMock()
-        mock_model.transcribe.return_value = ([seg], None)
-        with patch.object(listener, "_load_model"):
-            listener._model = mock_model
-            listener._run()
+        listener._process_chunk(self._speech(listener), now=0.0)
+        _drain_partials(listener)
+        listener._process_chunk(self._speech(listener), now=0.5)
+        _drain_partials(listener)
+        listener._process_chunk(self._speech(listener), now=1.0)
+        _drain_partials(listener)
 
         assert len(partials) >= 1
-        assert all(p == "hello" for p in partials)
+        assert all(p == "transcribed" for p in partials)
 
-class TestSpeechEndCallback:
-    def test_speech_end_callback_fires_on_silence_after_speech(self):
-        chunk_samples = int(CHUNK_SECONDS * SAMPLE_RATE)
-        speech_chunk = np.full((chunk_samples, 1), 0.5, dtype=np.float32)
-        silence_chunk = np.zeros((chunk_samples, 1), dtype=np.float32)
+    def test_partial_callback_skipped_while_worker_in_flight(self):
+        listener = self._make_listener(partial_interval_seconds=0.0)
+        listener.partial_callback = lambda _t: None
+        listener._partial_pending.set()  # simulate worker in flight
 
-        read_count = 0
+        with patch.object(listener, "_kick_partial") as kick:
+            listener._process_chunk(self._speech(listener), now=0.0)
+            kick.assert_not_called()
+
+    def test_speech_end_callback_fires_on_silence(self):
+        ended: list[bool] = []
+        listener = self._make_listener()
+        listener.speech_end_callback = lambda: ended.append(True)
+
+        for i in range(3):
+            listener._process_chunk(self._speech(listener), now=0.2 * i)
+        listener._process_chunk(self._silence(listener), now=0.6)
+
+        assert ended == [True]
+
+    def test_speech_end_callback_fires_on_max_samples(self):
+        """Regression: previously the max_samples cap reset the buffer
+        without firing speech_end_callback, leaving partial UI state."""
+        ended: list[bool] = []
+        listener = self._make_listener(max_speech_seconds=1.0)
+        listener.speech_end_callback = lambda: ended.append(True)
+
+        speech = self._speech(listener)
+        # 5 chunks of 0.2s = 1.0s = max_samples (cap fires on the 5th).
+        for i in range(5):
+            listener._process_chunk(speech, now=0.2 * i)
+
+        assert ended == [True], "speech_end_callback must fire on max_samples cap"
+        assert listener.get_text() == ["transcribed"]
+        assert not listener._in_speech, "max_samples reset should clear in_speech"
+
+    def test_no_callbacks_does_not_raise(self):
+        listener = self._make_listener()
+        # No partial_callback, no speech_end_callback.
+        for i in range(3):
+            listener._process_chunk(self._speech(listener), now=0.2 * i)
+        listener._process_chunk(self._silence(listener), now=0.6)
+        assert listener.get_text() == ["transcribed"]
+
+
+class TestPipelineIntegration:
+    """End-to-end test: scripted input stream → audio thread → processor → text queue."""
+
+    def test_pipeline_produces_transcription(self):
+        listener = SpeechListener(model_size="tiny")
+        listener._model = _mock_model("integrated")
+
+        chunk_samples = listener.config.chunk_samples
+        speech = np.full((chunk_samples, 1), 0.5, dtype=np.float32)
+        silence = np.zeros((chunk_samples, 1), dtype=np.float32)
+        # 3 speech chunks (≥ min_samples) then silence to commit.
+        chunks = [speech, speech, speech, silence]
+        counter = [0]
 
         def mock_read(n):
-            nonlocal read_count
-            read_count += 1
-            if read_count == 1:
-                return speech_chunk, False
-            if read_count == 2:
-                return silence_chunk, False
+            i = counter[0]
+            counter[0] += 1
+            if i < len(chunks):
+                return chunks[i], False
             listener._stop_event.set()
-            return silence_chunk, False
+            return silence, False
 
         mock_stream = MagicMock()
         mock_stream.read = mock_read
         mock_stream.__enter__ = MagicMock(return_value=mock_stream)
         mock_stream.__exit__ = MagicMock(return_value=False)
-        sd_mock = sys.modules["sounddevice"]
-        sd_mock.InputStream = MagicMock(return_value=mock_stream)
-
-        ended: list[bool] = []
-        listener = SpeechListener(
-            model_size="tiny",
-            device="cpu",
-            speech_end_callback=lambda: ended.append(True),
+        sys.modules["sounddevice"].InputStream = MagicMock(  # type: ignore[attr-defined]
+            return_value=mock_stream
         )
 
-        seg = MagicMock()
-        seg.text = "hi"
-        mock_model = MagicMock()
-        mock_model.transcribe.return_value = ([seg], None)
-        with patch.object(listener, "_load_model"):
-            listener._model = mock_model
-            listener._run()
+        listener.start()
+        deadline = time.time() + 3.0
+        while not listener._stop_event.is_set() and time.time() < deadline:
+            time.sleep(0.01)
+        # let processor drain remaining chunks
+        time.sleep(0.2)
+        listener.stop()
 
-        assert len(ended) >= 1
-
-
-class TestNoCallbackSmokeTest:
-    def test_no_partial_callback_when_unset(self):
-        chunk_samples = int(CHUNK_SECONDS * SAMPLE_RATE)
-        speech_chunk = np.full((chunk_samples, 1), 0.5, dtype=np.float32)
-        silence_chunk = np.zeros((chunk_samples, 1), dtype=np.float32)
-
-        read_count = 0
-
-        def mock_read(n):
-            nonlocal read_count
-            read_count += 1
-            if read_count <= 2:
-                return speech_chunk, False
-            if read_count == 3:
-                return silence_chunk, False
-            listener._stop_event.set()
-            return silence_chunk, False
-
-        mock_stream = MagicMock()
-        mock_stream.read = mock_read
-        mock_stream.__enter__ = MagicMock(return_value=mock_stream)
-        mock_stream.__exit__ = MagicMock(return_value=False)
-        sd_mock = sys.modules["sounddevice"]
-        sd_mock.InputStream = MagicMock(return_value=mock_stream)
-
-        listener = SpeechListener(model_size="tiny", device="cpu")
-        seg = MagicMock(); seg.text = "hi"
-        mock_model = MagicMock()
-        mock_model.transcribe.return_value = ([seg], None)
-        with patch.object(listener, "_load_model"):
-            listener._model = mock_model
-            # smoke: should not raise even without partial_callback
-            listener._run()
+        assert listener.get_text() == ["integrated"]

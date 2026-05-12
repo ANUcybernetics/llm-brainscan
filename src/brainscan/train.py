@@ -212,6 +212,8 @@ def _format_param_name(name: str) -> str:
 
 
 def _build_listener(args) -> object | None:
+    """Construct a SpeechListener (unstarted) so the caller can wire
+    callbacks before audio capture begins. Returns None when --no-mic."""
     if args.no_mic:
         return None
     from brainscan.stt import SpeechConfig, SpeechListener
@@ -223,10 +225,9 @@ def _build_listener(args) -> object | None:
         silence_threshold=args.silence_threshold,
         min_speech_seconds=args.min_speech_seconds,
         max_speech_seconds=args.max_speech_seconds,
+        audio_device=args.audio_device,
     )
-    listener = SpeechListener(config=stt_config)
-    listener.start()
-    return listener
+    return SpeechListener(config=stt_config)
 
 
 def _caption_state_label(convo: Conversation, step: int, loss: float) -> str:
@@ -292,26 +293,32 @@ def main() -> None:
     parser.add_argument(
         "--silence-threshold",
         type=float,
-        default=0.01,
+        default=tuning.SILENCE_THRESHOLD,
         help="RMS threshold for speech detection (raise for noisy environments)",
     )
     parser.add_argument(
         "--chunk-seconds",
         type=float,
-        default=2.0,
-        help="Audio chunk size in seconds (debounce window)",
+        default=tuning.STT_CHUNK_SECONDS,
+        help="Audio capture chunk in seconds (sets VAD/end-of-speech latency)",
     )
     parser.add_argument(
         "--min-speech-seconds",
         type=float,
-        default=0.5,
+        default=tuning.MIN_SPEECH_SECONDS,
         help="Minimum speech duration to trigger transcription",
     )
     parser.add_argument(
         "--max-speech-seconds",
         type=float,
-        default=30.0,
+        default=tuning.MAX_SPEECH_SECONDS,
         help="Maximum speech duration before forced transcription",
+    )
+    parser.add_argument(
+        "--audio-device",
+        type=int,
+        default=None,
+        help="sounddevice input device index (None = system default)",
     )
     parser.add_argument(
         "--speak", action="store_true", help="Enable TTS for model responses"
@@ -435,8 +442,6 @@ def main() -> None:
         live_renderer.set_overlays(overlays)
 
     listener = _build_listener(args)
-    if listener is not None:
-        print("Microphone listener started")
 
     drone = None
     if args.drone:
@@ -463,17 +468,6 @@ def main() -> None:
             event_holder["text"] = text
             event_holder["expires_at"] = now + duration
 
-        def on_partial(text: str) -> None:
-            partial_holder["text"] = text
-            partial_pulse.trigger(time.time() - t0)
-
-        def on_speech_end() -> None:
-            partial_holder["text"] = ""
-
-        if listener is not None:
-            listener._partial_callback = on_partial
-            listener._speech_end_callback = on_speech_end
-
         gen_iter = model.streaming_generate(
             b"ROMEO: ", device=device, emit_prompt=False
         )
@@ -493,6 +487,19 @@ def main() -> None:
         prev_state = ConversationState.MUSE
         rebirth_fade = RebirthFade()
         global_brightness = 1.0
+
+        def on_partial(text: str) -> None:
+            partial_holder["text"] = text
+            partial_pulse.trigger(time.time() - t0)
+
+        def on_speech_end() -> None:
+            partial_holder["text"] = ""
+
+        if listener is not None:
+            listener.partial_callback = on_partial
+            listener.speech_end_callback = on_speech_end
+            listener.start()
+            print("Microphone listener started")
 
         try:
             while True:

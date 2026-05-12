@@ -40,6 +40,12 @@ MAX_SPEECH_SECONDS = 30.0
 PARTIAL_INTERVAL_SECONDS = 1.0
 """Minimum interval between partial-transcript callbacks during in_speech."""
 
+STT_CHUNK_SECONDS = 0.2
+"""Audio capture granularity. Sets the wall-clock latency for speech-onset
+and end-of-speech detection: a value of 0.2 means VAD evaluates 5x/second.
+Smaller is more responsive but produces more wake-ups; 0.2 is comfortable
+on the Jetson and lets a 0.5s utterance be detected after ~3 chunks."""
+
 # --- TTS (piper) ----------------------------------------------------
 
 TTS_GAIN_DB = -12.0
