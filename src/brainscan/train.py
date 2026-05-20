@@ -21,7 +21,6 @@ import numpy as np
 import torch
 
 from brainscan import tuning
-from brainscan.captions import CaptionsState, compose_caption
 from brainscan.conversation import (
     Conversation,
     ConversationState,
@@ -49,7 +48,6 @@ from brainscan.rebirth import (
     step_rebirth_phase,
 )
 from brainscan.renderer import (
-    CaptionsFrame,
     LaneFrame,
     LiveRenderer,
     OffscreenRenderer,
@@ -89,9 +87,8 @@ class PulseState:
             return self._value
 
 
-AUDIENCE_HEIGHT = 96
-MODEL_LANE_HEIGHT = 96
-CAPTIONS_HEIGHT = 32
+AUDIENCE_HEIGHT = 112
+MODEL_LANE_HEIGHT = 112
 
 
 def get_device() -> torch.device:
@@ -133,10 +130,9 @@ def _build_weight_buffer(
 
 def _build_lane_frames(
     convo: Conversation,
-    captions_state: CaptionsState,
     commit_pulse: float = 0.0,
     partial_pulse: float = 0.0,
-) -> tuple[LaneFrame, LaneFrame, CaptionsFrame]:
+) -> tuple[LaneFrame, LaneFrame]:
     a_chars, a_attrs, _ = convo.audience.snapshot()
     m_chars, _, m_probs = convo.model_lane.snapshot()
 
@@ -159,20 +155,7 @@ def _build_lane_frames(
         count=convo.model_lane.count,
         caret_col=model_caret,
     )
-    cap_chars = compose_caption(captions_state)
-    captions = CaptionsFrame(chars=cap_chars, count=len(cap_chars))
-    return audience, model, captions
-
-
-def _current_event_line(
-    now: float, event_holder: dict[str, object]
-) -> str:
-    """Return the event line if it has not yet expired, else clear and return ''."""
-    expires = float(event_holder["expires_at"])  # type: ignore[arg-type]
-    if now >= expires:
-        event_holder["text"] = ""
-        return ""
-    return str(event_holder["text"])
+    return audience, model
 
 
 def _process_committed(
@@ -181,34 +164,6 @@ def _process_committed(
     for text in listener.committed:
         log.info("Audience: %s", text)
         training.append(text)
-
-
-
-def _format_param_name(name: str) -> str:
-    """Compress a parameter name for the captions cursor label.
-
-    Examples:
-        wte.weight              -> embed wte
-        wpe.weight              -> embed wpe
-        blocks.4.attn.c_attn.weight -> block 4 attn c_attn
-        blocks.0.ln_1.bias      -> block 0 ln_1
-        ln_f.weight             -> output ln_f
-        lm_head.weight          -> output lm_head
-    """
-    base = name.removesuffix(".weight").removesuffix(".bias")
-    parts = base.split(".")
-    if not parts:
-        return name
-    head = parts[0]
-    if head in ("wte", "wpe"):
-        return f"embed {head}"
-    if head == "blocks":
-        block_idx = parts[1]
-        rest = " ".join(parts[2:])
-        return f"block {block_idx} {rest}"
-    if head in ("ln_f", "lm_head"):
-        return f"output {head}"
-    return base
 
 
 def _build_listener(args) -> object | None:
@@ -228,14 +183,6 @@ def _build_listener(args) -> object | None:
         audio_device=args.audio_device,
     )
     return SpeechListener(config=stt_config)
-
-
-def _caption_state_label(convo: Conversation, step: int, loss: float) -> str:
-    if convo.state == ConversationState.LISTENING:
-        return "listening..."
-    if convo.state == ConversationState.RESPONDING:
-        return "responding..."
-    return f"musing | step {step:,} loss {loss:.2f}"
 
 
 def main() -> None:
@@ -410,8 +357,6 @@ def main() -> None:
     )
     print(f"\nLayout saved to {layout_path}")
 
-    flat_order = sorted(layout, key=lambda n: (layout[n].x, layout[n].y))
-
     offscreen_renderer = None
     if args.save_images:
         offscreen_renderer = OffscreenRenderer(
@@ -419,7 +364,6 @@ def main() -> None:
             HEIGHT,
             audience_height=AUDIENCE_HEIGHT,
             model_height=MODEL_LANE_HEIGHT,
-            captions_height=CAPTIONS_HEIGHT,
         )
         print(f"Offscreen renderer initialised ({WIDTH}x{HEIGHT})")
 
@@ -430,7 +374,6 @@ def main() -> None:
             HEIGHT,
             audience_height=AUDIENCE_HEIGHT,
             model_height=MODEL_LANE_HEIGHT,
-            captions_height=CAPTIONS_HEIGHT,
             fullscreen=True,
         )
         print(f"Live renderer initialised ({WIDTH}x{HEIGHT})")
@@ -462,11 +405,6 @@ def main() -> None:
         partial_holder: dict[str, str] = {"text": ""}
         partial_pulse = PulseState()
         commit_pulse = PulseState()
-        event_holder: dict[str, object] = {"text": "", "expires_at": 0.0}
-
-        def _show_event(text: str, duration: float = tuning.EVENT_LINE_DURATION_SECONDS, now: float = 0.0) -> None:
-            event_holder["text"] = text
-            event_holder["expires_at"] = now + duration
 
         gen_iter = model.streaming_generate(
             b"ROMEO: ", device=device, emit_prompt=False
@@ -608,7 +546,6 @@ def main() -> None:
                         f"{iso_key} seed={res.seed}"
                         f" persist_cycles={args.persist_audience_cycles}\n"
                     )
-                    _show_event(f"dawn {now_dt.strftime('%H:%M')}", now=now_t)
 
                     # Recompute layout/overlays in case n_embd changed.
                     new_param_counts = {n: p.numel() for n, p in model.named_parameters()}
@@ -643,21 +580,10 @@ def main() -> None:
                         f" | {dt_elapsed:.1f}s | {convo.state.value}"
                     )
 
-                    cursor_idx = int(now_t / tuning.CURSOR_LABEL_PERIOD_SECONDS) % len(flat_order) if flat_order else 0
-                    cursor_label = (
-                        _format_param_name(flat_order[cursor_idx])
-                        if flat_order else ""
-                    )
-                    captions_state = CaptionsState(
-                        state_label=_caption_state_label(convo, step, loss.item()),
-                        cursor_label=cursor_label,
-                        event_line=_current_event_line(now_t, event_holder),
-                    )
                     commit_val = commit_pulse.decay(now_t)
                     partial_val = partial_pulse.decay(now_t)
-                    audience, model_frame, captions = _build_lane_frames(
+                    audience, model_frame = _build_lane_frames(
                         convo,
-                        captions_state,
                         commit_pulse=commit_val,
                         partial_pulse=partial_val,
                     )
@@ -673,7 +599,6 @@ def main() -> None:
                             buf,
                             audience=audience,
                             model=model_frame,
-                            captions=captions,
                             global_brightness=global_brightness,
                         )
                         save_frame(
@@ -688,7 +613,6 @@ def main() -> None:
                             buf,
                             audience=audience,
                             model=model_frame,
-                            captions=captions,
                             global_brightness=global_brightness,
                         )
 

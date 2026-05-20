@@ -16,14 +16,13 @@ class TestLaneBufferConstruction:
         """
         from brainscan.layout import HEIGHT, WIDTH
         from brainscan.renderer import RenderConfig
-        from brainscan.train import AUDIENCE_HEIGHT, CAPTIONS_HEIGHT, MODEL_LANE_HEIGHT
+        from brainscan.train import AUDIENCE_HEIGHT, MODEL_LANE_HEIGHT
 
         cfg = RenderConfig(
             width=WIDTH,
             height=HEIGHT,
             audience_height=AUDIENCE_HEIGHT,
             model_height=MODEL_LANE_HEIGHT,
-            captions_height=CAPTIONS_HEIGHT,
         )
         assert LaneBuffer().capacity == cfg.lane_capacity
 

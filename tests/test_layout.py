@@ -337,15 +337,12 @@ class TestTextStripConstants:
         assert TEXT_STRIP_HEIGHT == 224
 
     def test_band_heights_sum_to_text_strip(self):
-        """The three band heights in train.py must sum to TEXT_STRIP_HEIGHT;
+        """The two lane heights in train.py must sum to TEXT_STRIP_HEIGHT;
         otherwise weights overlap the text strip (or leave a dark gap).
         """
-        from brainscan.train import AUDIENCE_HEIGHT, CAPTIONS_HEIGHT, MODEL_LANE_HEIGHT
+        from brainscan.train import AUDIENCE_HEIGHT, MODEL_LANE_HEIGHT
 
-        assert (
-            AUDIENCE_HEIGHT + MODEL_LANE_HEIGHT + CAPTIONS_HEIGHT
-            == TEXT_STRIP_HEIGHT
-        )
+        assert AUDIENCE_HEIGHT + MODEL_LANE_HEIGHT == TEXT_STRIP_HEIGHT
 
 
 class TestCustomLayout:

@@ -1,10 +1,9 @@
-"""Tests for the five visual polish features.
+"""Tests for the four visual polish features.
 
 Polish 1: caret cursor on model lane
 Polish 2: source-tag pulse on commit
 Polish 3: audience right-edge pulse on partials
-Polish 4: captions event-line shows for 5s then clears
-Polish 5: fade-to-charcoal during rebirth (global_brightness)
+Polish 4: fade-to-charcoal during rebirth (global_brightness)
 """
 
 from __future__ import annotations
@@ -15,9 +14,8 @@ import numpy as np
 import pytest
 
 from brainscan.conversation import Conversation, ConversationState
-from brainscan.captions import CaptionsState
 from brainscan.renderer import LaneFrame, OffscreenRenderer, _UNIFORM_DTYPE
-from brainscan.train import PulseState, _build_lane_frames, _current_event_line
+from brainscan.train import PulseState, _build_lane_frames
 
 
 # ---------------------------------------------------------------------------
@@ -61,7 +59,7 @@ class TestLaneFrameFields:
 class TestDrawUniforms:
     @pytest.fixture
     def renderer(self):
-        return OffscreenRenderer(64, 64, audience_height=48, model_height=0, captions_height=0)
+        return OffscreenRenderer(64, 64, audience_height=48, model_height=0)
 
     def _render_and_check_uniforms(self, renderer, **kwargs):
         """Call render() and return the uniform_data after the call."""
@@ -84,14 +82,14 @@ class TestDrawUniforms:
         model_frame = LaneFrame(
             chars=chars, attrs_or_probs=probs, count=cap, caret_col=-1
         )
-        renderer2 = OffscreenRenderer(64, 64, model_height=48, audience_height=0, captions_height=0)
+        renderer2 = OffscreenRenderer(64, 64, model_height=48, audience_height=0)
         weights = np.zeros(64 * 64, dtype=np.float32)
         renderer2.render(weights, model=model_frame)
         u = renderer2._res.uniform_data
         assert u["model_caret_col"][0] == np.uint32(0xFFFFFFFF)
 
     def test_caret_col_positive_writes_value(self):
-        renderer = OffscreenRenderer(64, 64, model_height=48, audience_height=0, captions_height=0)
+        renderer = OffscreenRenderer(64, 64, model_height=48, audience_height=0)
         cap = renderer.config.lane_capacity
         chars = np.zeros(cap, dtype=np.uint32)
         probs = np.zeros(cap, dtype=np.float32)
@@ -170,60 +168,26 @@ class TestGlobalBrightnessRender:
 
 
 # ---------------------------------------------------------------------------
-# Polish 4 — _current_event_line show-for-5s-then-clear
-# ---------------------------------------------------------------------------
-
-class TestCurrentEventLine:
-    def _make_holder(self, text: str = "", expires_at: float = 0.0):
-        return {"text": text, "expires_at": expires_at}
-
-    def test_returns_text_before_expiry(self):
-        holder = self._make_holder("dawn 09:00", expires_at=10.0)
-        assert _current_event_line(5.0, holder) == "dawn 09:00"
-
-    def test_returns_empty_after_expiry(self):
-        holder = self._make_holder("dawn 09:00", expires_at=5.0)
-        assert _current_event_line(5.0, holder) == ""
-
-    def test_clears_text_on_expiry(self):
-        holder = self._make_holder("something", expires_at=3.0)
-        _current_event_line(4.0, holder)
-        assert holder["text"] == ""
-
-    def test_does_not_clear_before_expiry(self):
-        holder = self._make_holder("still visible", expires_at=100.0)
-        _current_event_line(50.0, holder)
-        assert holder["text"] == "still visible"
-
-    def test_empty_holder_returns_empty(self):
-        holder = self._make_holder("", expires_at=0.0)
-        assert _current_event_line(1.0, holder) == ""
-
-
-# ---------------------------------------------------------------------------
 # Polish 1 — _build_lane_frames sets caret_col based on convo state
 # ---------------------------------------------------------------------------
 
 class TestBuildLaneFramesCaret:
-    def _blank_captions(self):
-        return CaptionsState(state_label="", cursor_label="")
-
     def test_muse_state_has_caret(self):
         convo = Conversation()
         assert convo.state == ConversationState.MUSE
-        _, model_frame, _ = _build_lane_frames(convo, self._blank_captions())
+        _, model_frame = _build_lane_frames(convo)
         assert model_frame.caret_col == convo.model_lane.count
 
     def test_listening_state_no_caret(self):
         convo = Conversation()
         convo.state = ConversationState.LISTENING
-        _, model_frame, _ = _build_lane_frames(convo, self._blank_captions())
+        _, model_frame = _build_lane_frames(convo)
         assert model_frame.caret_col == -1
 
     def test_responding_state_has_caret(self):
         convo = Conversation()
         convo.state = ConversationState.RESPONDING
-        _, model_frame, _ = _build_lane_frames(convo, self._blank_captions())
+        _, model_frame = _build_lane_frames(convo)
         assert model_frame.caret_col == convo.model_lane.count
 
 
@@ -232,26 +196,19 @@ class TestBuildLaneFramesCaret:
 # ---------------------------------------------------------------------------
 
 class TestBuildLaneFramesPulse:
-    def _blank_captions(self):
-        return CaptionsState(state_label="", cursor_label="")
-
     def test_commit_pulse_forwarded_to_audience(self):
         convo = Conversation()
-        aud, _, _ = _build_lane_frames(
-            convo, self._blank_captions(), commit_pulse=0.8
-        )
+        aud, _ = _build_lane_frames(convo, commit_pulse=0.8)
         assert aud.pulse == pytest.approx(0.8)
 
     def test_partial_pulse_forwarded_as_edge_pulse(self):
         convo = Conversation()
-        aud, _, _ = _build_lane_frames(
-            convo, self._blank_captions(), partial_pulse=0.5
-        )
+        aud, _ = _build_lane_frames(convo, partial_pulse=0.5)
         assert aud.edge_pulse == pytest.approx(0.5)
 
     def test_default_pulses_are_zero(self):
         convo = Conversation()
-        aud, _, _ = _build_lane_frames(convo, self._blank_captions())
+        aud, _ = _build_lane_frames(convo)
         assert aud.pulse == 0.0
         assert aud.edge_pulse == 0.0
 
@@ -268,9 +225,9 @@ class TestUniformStructSize:
         assert "audience_edge_pulse" in names
         assert "global_brightness" in names
 
-    def test_dtype_size_is_at_least_80_bytes(self):
-        # 16 original fields × 4 bytes = 64; 4 new fields × 4 bytes = 16 → 80
-        assert _UNIFORM_DTYPE.itemsize >= 80
+    def test_dtype_size_at_least_64_bytes(self):
+        # 12 lane/weight fields + 4 polish fields + overlay_run_count = 18 × 4 = 72
+        assert _UNIFORM_DTYPE.itemsize >= 64
 
 
 # ---------------------------------------------------------------------------

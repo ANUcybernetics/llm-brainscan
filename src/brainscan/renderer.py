@@ -4,8 +4,9 @@ The renderer takes flattened weight data (one float per pixel), uploads it to a
 storage buffer, and runs a fragment shader that applies a colourmap to produce
 the final image. All colourmap computation happens on the GPU.
 
-The bottom strip of the canvas can display generated text using a bitmap font,
-with each character coloured by its softmax probability.
+The bottom strip of the canvas carries two text lanes (audience speech and
+model output) rendered from a bitmap font, with each model-lane character
+coloured by its softmax probability.
 
 Two renderer classes are provided:
 - OffscreenRenderer: render to a texture, read back as numpy array
@@ -28,9 +29,6 @@ const ATTR_SOURCE_TAG: u32 = 2u;
 const LANE_SCALE: u32 = 4u;
 const LANE_CELL_W: u32 = 32u;
 const LANE_CELL_H: u32 = 64u;
-const CAPTIONS_SCALE: u32 = 2u;
-const CAPTIONS_CELL_W: u32 = 16u;
-const CAPTIONS_CELL_H: u32 = 32u;
 
 struct Uniforms {
     width: u32,
@@ -45,9 +43,6 @@ struct Uniforms {
     model_height: u32,
     model_count: u32,
     model_offset_px: u32,
-    captions_y: u32,
-    captions_height: u32,
-    captions_count: u32,
     vmax: f32,
     model_caret_col: u32,
     audience_pulse: f32,
@@ -63,9 +58,8 @@ struct Uniforms {
 @group(0) @binding(4) var<storage, read> audience_attrs: array<u32>;
 @group(0) @binding(5) var<storage, read> model_chars: array<u32>;
 @group(0) @binding(6) var<storage, read> model_probs: array<f32>;
-@group(0) @binding(7) var<storage, read> captions_chars: array<u32>;
-@group(0) @binding(8) var<storage, read> overlay_chars: array<u32>;
-@group(0) @binding(9) var<storage, read> overlay_runs: array<vec4<u32>>;
+@group(0) @binding(7) var<storage, read> overlay_chars: array<u32>;
+@group(0) @binding(8) var<storage, read> overlay_runs: array<vec4<u32>>;
 
 struct VertexOutput {
     @builtin(position) pos: vec4<f32>,
@@ -220,28 +214,6 @@ fn model_band(px: u32, py: u32) -> vec4<f32> {
     return bg;
 }
 
-fn captions_band(px: u32, py: u32) -> vec4<f32> {
-    if py < uniforms.captions_y || py >= uniforms.captions_y + uniforms.captions_height {
-        return vec4<f32>(-1.0, 0.0, 0.0, 1.0);
-    }
-    let cap_py = py - uniforms.captions_y;
-    let col = px / CAPTIONS_CELL_W;
-    let row = cap_py / CAPTIONS_CELL_H;
-    let cols = uniforms.width / CAPTIONS_CELL_W;
-    let char_pos = row * cols + col;
-    let bg = vec4<f32>(0.01, 0.01, 0.01, 1.0);
-    if char_pos >= uniforms.captions_count {
-        return bg;
-    }
-    let glyph = captions_chars[char_pos];
-    let gx = (px % CAPTIONS_CELL_W) / CAPTIONS_SCALE;
-    let gy = (cap_py % CAPTIONS_CELL_H) / CAPTIONS_SCALE;
-    if font_pixel(glyph, gx, gy) {
-        return vec4<f32>(0.40, 0.40, 0.42, 1.0);
-    }
-    return bg;
-}
-
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let px = u32(in.uv.x * f32(uniforms.width));
@@ -255,11 +227,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let cap_m = model_band(px, py);
     if cap_m.x >= 0.0 {
         return vec4<f32>(cap_m.rgb * uniforms.global_brightness, 1.0);
-    }
-
-    let cap_c = captions_band(px, py);
-    if cap_c.x >= 0.0 {
-        return vec4<f32>(cap_c.rgb * uniforms.global_brightness, 1.0);
     }
 
     let cap_o = overlay_pixel(px, py);
@@ -290,9 +257,6 @@ COLORMAP_THERMAL = 1
 LANE_SCALE = 4
 LANE_GLYPH_W = 8 * LANE_SCALE   # 32 px
 LANE_GLYPH_H = 16 * LANE_SCALE  # 64 px
-CAPTIONS_SCALE = 2
-CAPTIONS_GLYPH_W = 8 * CAPTIONS_SCALE   # 16 px
-CAPTIONS_GLYPH_H = 16 * CAPTIONS_SCALE  # 32 px
 
 _UNIFORM_DTYPE = np.dtype([
     ("width", np.uint32),
@@ -307,9 +271,6 @@ _UNIFORM_DTYPE = np.dtype([
     ("model_height", np.uint32),
     ("model_count", np.uint32),
     ("model_offset_px", np.uint32),
-    ("captions_y", np.uint32),
-    ("captions_height", np.uint32),
-    ("captions_count", np.uint32),
     ("vmax", np.float32),
     ("model_caret_col", np.uint32),
     ("audience_pulse", np.float32),
@@ -334,31 +295,22 @@ class RenderConfig:
     colormap: int = COLORMAP_DIVERGING
     audience_height: int = 0
     model_height: int = 0
-    captions_height: int = 0
-
-    @property
-    def captions_y(self) -> int:
-        return self.height - self.captions_height if self.captions_height > 0 else 0
 
     @property
     def model_y(self) -> int:
         if self.model_height == 0:
             return 0
-        return self.height - self.captions_height - self.model_height
+        return self.height - self.model_height
 
     @property
     def audience_y(self) -> int:
         if self.audience_height == 0:
             return 0
-        return max(0, self.height - self.captions_height - self.model_height - self.audience_height)
+        return max(0, self.height - self.model_height - self.audience_height)
 
     @property
     def lane_capacity(self) -> int:
         return max(1, self.width // LANE_GLYPH_W)
-
-    @property
-    def captions_capacity(self) -> int:
-        return max(self.width // CAPTIONS_GLYPH_W, 1)
 
 
 @dataclass
@@ -373,7 +325,6 @@ class RenderResources:
     audience_attrs_buffer: wgpu.GPUBuffer
     model_chars_buffer: wgpu.GPUBuffer
     model_probs_buffer: wgpu.GPUBuffer
-    captions_chars_buffer: wgpu.GPUBuffer
     overlay_chars_buffer: wgpu.GPUBuffer
     overlay_runs_buffer: wgpu.GPUBuffer
     bind_group: wgpu.GPUBindGroup
@@ -413,8 +364,6 @@ def create_render_pipeline(
     uniform_data["audience_height"] = config.audience_height
     uniform_data["model_y"] = config.model_y
     uniform_data["model_height"] = config.model_height
-    uniform_data["captions_y"] = config.captions_y
-    uniform_data["captions_height"] = config.captions_height
     uniform_data["model_caret_col"] = np.uint32(0xFFFFFFFF)
     uniform_data["audience_pulse"] = np.float32(0.0)
     uniform_data["audience_edge_pulse"] = np.float32(0.0)
@@ -461,12 +410,6 @@ def create_render_pipeline(
         usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST,
     )
 
-    captions_cap = max(config.captions_capacity, 1)
-    captions_chars_buffer = device.create_buffer(
-        size=captions_cap * 4,
-        usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST,
-    )
-
     OVERLAY_CHARS_CAP = 1024  # ample for ~50 overlays of short text
     OVERLAY_RUNS_CAP = 256    # at most ~50 runs in production
     overlay_chars_buffer = device.create_buffer(
@@ -489,7 +432,7 @@ def create_render_pipeline(
                     else wgpu.BufferBindingType.read_only_storage
                 },
             }
-            for i in range(10)
+            for i in range(9)
         ]
     )
 
@@ -501,7 +444,6 @@ def create_render_pipeline(
         audience_attrs_buffer,
         model_chars_buffer,
         model_probs_buffer,
-        captions_chars_buffer,
         overlay_chars_buffer,
         overlay_runs_buffer,
     ]
@@ -546,7 +488,6 @@ def create_render_pipeline(
         audience_attrs_buffer=audience_attrs_buffer,
         model_chars_buffer=model_chars_buffer,
         model_probs_buffer=model_probs_buffer,
-        captions_chars_buffer=captions_chars_buffer,
         overlay_chars_buffer=overlay_chars_buffer,
         overlay_runs_buffer=overlay_runs_buffer,
         bind_group=bind_group,
@@ -594,19 +535,12 @@ class LaneFrame:
     edge_pulse: float = 0.0
 
 
-@dataclass
-class CaptionsFrame:
-    chars: np.ndarray
-    count: int
-
-
 def draw(
     res: RenderResources,
     target_view: wgpu.GPUTextureView,
     flat_weights: np.ndarray,
     audience: LaneFrame | None = None,
     model: LaneFrame | None = None,
-    captions: CaptionsFrame | None = None,
     global_brightness: float = 1.0,
 ) -> None:
     device = res.device
@@ -644,15 +578,6 @@ def draw(
             model.attrs_or_probs.astype(np.float32).tobytes(),
         )
 
-    captions_count = 0
-    if captions is not None:
-        captions_count = captions.count
-        device.queue.write_buffer(
-            res.captions_chars_buffer,
-            0,
-            captions.chars.astype(np.uint32).tobytes(),
-        )
-
     vmax = float(np.max(np.abs(flat_weights))) if param_count > 0 else 0.0
 
     model_caret_col_val = np.uint32(0xFFFFFFFF)
@@ -673,7 +598,6 @@ def draw(
     res.uniform_data["audience_offset_px"] = audience_offset_px
     res.uniform_data["model_count"] = model_count
     res.uniform_data["model_offset_px"] = model_offset_px
-    res.uniform_data["captions_count"] = captions_count
     res.uniform_data["vmax"] = vmax
     res.uniform_data["model_caret_col"] = model_caret_col_val
     res.uniform_data["audience_pulse"] = audience_pulse_val
@@ -717,7 +641,6 @@ class OffscreenRenderer:
         colormap: int = COLORMAP_DIVERGING,
         audience_height: int = 0,
         model_height: int = 0,
-        captions_height: int = 0,
     ):
         self.width = width
         self.height = height
@@ -725,7 +648,7 @@ class OffscreenRenderer:
         self.device = device or get_device()
 
         self.config = RenderConfig(
-            width, height, colormap, audience_height, model_height, captions_height
+            width, height, colormap, audience_height, model_height
         )
         self._res = create_render_pipeline(
             self.config, self.device, wgpu.TextureFormat.rgba8unorm
@@ -742,12 +665,11 @@ class OffscreenRenderer:
         flat_weights: np.ndarray,
         audience: LaneFrame | None = None,
         model: LaneFrame | None = None,
-        captions: CaptionsFrame | None = None,
         global_brightness: float = 1.0,
     ) -> np.ndarray:
         """Render weight data and return RGBA image as numpy array."""
         target_view = self._target_texture.create_view()
-        draw(self._res, target_view, flat_weights, audience, model, captions, global_brightness)
+        draw(self._res, target_view, flat_weights, audience, model, global_brightness)
 
         data = self.device.queue.read_texture(
             {"texture": self._target_texture, "mip_level": 0, "origin": (0, 0, 0)},
@@ -779,7 +701,6 @@ class LiveRenderer:
         colormap: int = COLORMAP_DIVERGING,
         audience_height: int = 0,
         model_height: int = 0,
-        captions_height: int = 0,
         fullscreen: bool = True,
         max_fps: int = 30,
         canvas: object | None = None,
@@ -807,7 +728,7 @@ class LiveRenderer:
         self._context.configure(device=self.device, format=surface_format)
 
         self.config = RenderConfig(
-            width, height, colormap, audience_height, model_height, captions_height
+            width, height, colormap, audience_height, model_height
         )
         self._res = create_render_pipeline(
             self.config, self.device, surface_format
@@ -817,7 +738,6 @@ class LiveRenderer:
         self._flat_weights: np.ndarray | None = None
         self._audience: LaneFrame | None = None
         self._model: LaneFrame | None = None
-        self._captions: CaptionsFrame | None = None
         self._global_brightness: float = 1.0
 
         if fullscreen:
@@ -830,7 +750,6 @@ class LiveRenderer:
         flat_weights: np.ndarray,
         audience: LaneFrame | None = None,
         model: LaneFrame | None = None,
-        captions: CaptionsFrame | None = None,
         global_brightness: float = 1.0,
     ) -> None:
         """Thread-safe update of weight and lane data for the next frame."""
@@ -838,7 +757,6 @@ class LiveRenderer:
             self._flat_weights = flat_weights.astype(np.float32, copy=True)
             self._audience = audience
             self._model = model
-            self._captions = captions
             self._global_brightness = global_brightness
 
     def _draw(self) -> None:
@@ -846,14 +764,13 @@ class LiveRenderer:
             weights = self._flat_weights
             audience = self._audience
             model = self._model
-            captions = self._captions
             global_brightness = self._global_brightness
 
         if weights is None:
             return
 
         texture = self._context.get_current_texture()
-        draw(self._res, texture.create_view(), weights, audience, model, captions, global_brightness)
+        draw(self._res, texture.create_view(), weights, audience, model, global_brightness)
 
     def _go_fullscreen(self) -> None:
         # Strip decorations and size to the monitor; on GNOME / Mutter that

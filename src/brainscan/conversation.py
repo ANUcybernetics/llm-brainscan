@@ -65,10 +65,6 @@ class Conversation:
     _response_text: list[int] = field(default_factory=list)
     _cooldown_until: float = -1.0
 
-    @property
-    def cursor_label(self) -> str:
-        return ""
-
     def step(
         self,
         now: float,

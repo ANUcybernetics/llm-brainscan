@@ -5,12 +5,10 @@ import pytest
 
 from brainscan.layout import TextOverlay
 from brainscan.renderer import (
-    CAPTIONS_GLYPH_W,
     COLORMAP_THERMAL,
     LANE_GLYPH_H,
     LANE_GLYPH_W,
     LANE_SCALE,
-    CaptionsFrame,
     LaneFrame,
     LiveRenderer,
     OffscreenRenderer,
@@ -61,50 +59,40 @@ class TestRenderConfigBands:
         cfg = RenderConfig(width=100, height=100)
         assert cfg.audience_height == 0
         assert cfg.model_height == 0
-        assert cfg.captions_height == 0
         assert cfg.audience_y == 0
         assert cfg.model_y == 0
-        assert cfg.captions_y == 0
 
     def test_bands_stack_upward_from_bottom(self):
         cfg = RenderConfig(
             width=7680, height=4320,
-            audience_height=90, model_height=90, captions_height=12,
+            audience_height=112, model_height=112,
         )
-        assert cfg.captions_y == 4308
-        assert cfg.model_y == 4218
-        assert cfg.audience_y == 4128
+        assert cfg.model_y == 4208
+        assert cfg.audience_y == 4096
 
     def test_lane_capacity_240_at_4x(self):
         cfg = RenderConfig(width=7680, height=4320, audience_height=96)
         assert cfg.lane_capacity == 240
 
-    def test_captions_capacity_480(self):
-        cfg = RenderConfig(width=7680, height=4320, captions_height=32)
-        assert cfg.captions_capacity == 480
-
     def test_lane_constants(self):
         assert LANE_SCALE == 4
         assert LANE_GLYPH_W == 32
         assert LANE_GLYPH_H == 64
-        assert CAPTIONS_GLYPH_W == 16
 
     def test_small_renderer_capacity(self):
-        cfg = RenderConfig(96, 200, audience_height=80, model_height=80, captions_height=32)
+        cfg = RenderConfig(96, 200, audience_height=80, model_height=80)
         assert cfg.lane_capacity >= 1
-        assert cfg.captions_capacity >= 1
 
     def test_partial_band_config_stacks_correctly(self):
-        cfg = RenderConfig(100, 200, audience_height=30, model_height=20, captions_height=10)
-        assert cfg.captions_y == 190
-        assert cfg.model_y == 170
-        assert cfg.audience_y == 140
+        cfg = RenderConfig(100, 200, audience_height=30, model_height=20)
+        assert cfg.model_y == 180
+        assert cfg.audience_y == 150
 
 
 class TestOffscreenRenderer:
     @pytest.fixture
     def small_renderer(self):
-        return OffscreenRenderer(32, 32, audience_height=0, model_height=0, captions_height=0)
+        return OffscreenRenderer(32, 32, audience_height=0, model_height=0)
 
     def test_render_returns_correct_shape(self, small_renderer):
         data = np.zeros(32 * 32, dtype=np.float32)
@@ -157,7 +145,7 @@ class TestOffscreenRenderer:
         assert bg_rgb.max() < 30, f"Background should be dark, got max {bg_rgb.max()}"
 
     def test_thermal_colormap(self):
-        renderer = OffscreenRenderer(32, 32, colormap=COLORMAP_THERMAL, audience_height=0, model_height=0, captions_height=0)
+        renderer = OffscreenRenderer(32, 32, colormap=COLORMAP_THERMAL, audience_height=0, model_height=0)
         positive = np.ones(32 * 32, dtype=np.float32)
         img_pos = renderer.render(positive)
         negative = -np.ones(32 * 32, dtype=np.float32)
@@ -166,7 +154,7 @@ class TestOffscreenRenderer:
 
     def test_different_sizes(self):
         for w, h in [(16, 16), (64, 32), (100, 50)]:
-            renderer = OffscreenRenderer(w, h, audience_height=0, model_height=0, captions_height=0)
+            renderer = OffscreenRenderer(w, h, audience_height=0, model_height=0)
             data = np.random.randn(w * h).astype(np.float32)
             img = renderer.render(data)
             assert img.shape == (h, w, 4)
@@ -180,7 +168,7 @@ class TestOffscreenRenderer:
 
     def test_render_no_lanes(self, small_renderer):
         data = np.zeros(32 * 32, dtype=np.float32)
-        img = small_renderer.render(data, audience=None, model=None, captions=None)
+        img = small_renderer.render(data, audience=None, model=None)
         assert img.shape == (32, 32, 4)
 
     def test_render_with_model_weights(self, small_renderer):
@@ -205,15 +193,10 @@ def _make_lane_frame(cap: int, char_val: int = ord("A"), prob: float = 1.0) -> L
     return LaneFrame(chars=chars, attrs_or_probs=probs, count=cap)
 
 
-def _make_captions_frame(cap: int, char_val: int = ord("x")) -> CaptionsFrame:
-    chars = np.full(cap, char_val, dtype=np.uint32)
-    return CaptionsFrame(chars=chars, count=cap)
-
-
 class TestModelLaneRendering:
     @pytest.fixture
     def renderer(self):
-        return OffscreenRenderer(96, 200, model_height=80, audience_height=0, captions_height=0)
+        return OffscreenRenderer(96, 200, model_height=80, audience_height=0)
 
     def test_model_lane_visible(self, renderer):
         weights = np.zeros(96 * 200, dtype=np.float32)
@@ -261,7 +244,7 @@ class TestModelLaneRendering:
 class TestAudienceLaneRendering:
     @pytest.fixture
     def renderer(self):
-        return OffscreenRenderer(96, 200, audience_height=80, model_height=0, captions_height=0)
+        return OffscreenRenderer(96, 200, audience_height=80, model_height=0)
 
     def test_audience_lane_visible(self, renderer):
         weights = np.zeros(96 * 200, dtype=np.float32)
@@ -327,83 +310,21 @@ class TestAudienceLaneRendering:
         assert bright_c > bright_s
 
 
-class TestCaptionsRendering:
-    @pytest.fixture
-    def renderer(self):
-        return OffscreenRenderer(80, 100, audience_height=0, model_height=0, captions_height=32)
-
-    def test_captions_visible(self, renderer):
-        weights = np.zeros(80 * 100, dtype=np.float32)
-        cap = renderer.config.captions_capacity
-        frame = _make_captions_frame(cap, ord("X"))
-        img = renderer.render(weights, captions=frame)
-        assert img.shape == (100, 80, 4)
-        cap_y = renderer.config.captions_y
-        region = img[cap_y:cap_y + renderer.config.captions_height, :, :3]
-        assert region.max() > 5, "Captions region should have visible content"
-
-    def test_empty_captions_is_dark(self, renderer):
-        weights = np.zeros(80 * 100, dtype=np.float32)
-        img = renderer.render(weights, captions=None)
-        cap_y = renderer.config.captions_y
-        region = img[cap_y:cap_y + renderer.config.captions_height, :, :3]
-        assert region.max() < 10, f"Empty captions should be dark, got {region.max()}"
-
-    def test_captions_grey_colour(self, renderer):
-        weights = np.zeros(80 * 100, dtype=np.float32)
-        cap = renderer.config.captions_capacity
-        frame = _make_captions_frame(cap, ord("W"))
-        img = renderer.render(weights, captions=frame)
-        cap_y = renderer.config.captions_y
-        region = img[cap_y:cap_y + renderer.config.captions_height, :, :]
-        on_pixels = region[region[:, :, 0] > 30]
-        if len(on_pixels) > 0:
-            avg_r = on_pixels[:, 0].astype(float).mean()
-            avg_g = on_pixels[:, 1].astype(float).mean()
-            assert abs(avg_r - avg_g) < 20, "Captions should be roughly grey (similar R and G)"
-
-    def test_captions_glyph_renders_at_2x_scale(self, renderer):
-        """A single glyph at column 1 should occupy x=16..31 (2× scale,
-        16-px cell), not x=8..15 (which would imply 1× scale).
-        """
-        weights = np.zeros(80 * 100, dtype=np.float32)
-        cap = renderer.config.captions_capacity
-        chars = np.full(cap, ord(" "), dtype=np.uint32)  # matches production blank
-        chars[1] = ord("X")
-        frame = CaptionsFrame(chars=chars, count=cap)
-        img = renderer.render(weights, captions=frame)
-        cap_y = renderer.config.captions_y
-        region = img[cap_y:cap_y + renderer.config.captions_height, :, :3]
-        # Peak per-column brightness: background ~3, glyph foreground ~100+
-        peak = region.max(axis=-1).max(axis=0)
-        lit_cols = np.where(peak > 50)[0]
-        assert len(lit_cols) > 0, "X at column 1 should light up pixels"
-        assert lit_cols.min() >= 16, (
-            f"column 1 at 2× scale starts at x=16; lit cols min was {lit_cols.min()}"
-        )
-        assert lit_cols.max() < 32, (
-            f"column 1 at 2× scale ends before x=32; lit cols max was {lit_cols.max()}"
-        )
-
-
-class TestThreeBandRendering:
+class TestTwoBandRendering:
     @pytest.fixture
     def renderer(self):
         return OffscreenRenderer(
             96, 300,
             audience_height=80,
             model_height=80,
-            captions_height=32,
         )
 
     def test_all_bands_render(self, renderer):
         weights = np.zeros(96 * 300, dtype=np.float32)
         cap = renderer.config.lane_capacity
-        ccap = renderer.config.captions_capacity
         aud = _make_lane_frame(cap, ord("A"), 1.0)
         mod = _make_lane_frame(cap, ord("M"), 1.0)
-        cap_frame = _make_captions_frame(ccap, ord("C"))
-        img = renderer.render(weights, audience=aud, model=mod, captions=cap_frame)
+        img = renderer.render(weights, audience=aud, model=mod)
         assert img.shape == (300, 96, 4)
 
     def test_weight_region_above_bands(self, renderer):
@@ -415,8 +336,7 @@ class TestThreeBandRendering:
     def test_bands_do_not_overlap(self, renderer):
         cfg = renderer.config
         assert cfg.audience_y + cfg.audience_height == cfg.model_y
-        assert cfg.model_y + cfg.model_height == cfg.captions_y
-        assert cfg.captions_y + cfg.captions_height <= cfg.height
+        assert cfg.model_y + cfg.model_height <= cfg.height
 
     def test_audience_and_model_visually_distinct(self, renderer):
         weights = np.zeros(96 * 300, dtype=np.float32)
@@ -447,7 +367,7 @@ class TestLaneScroll:
         assert frame.offset_px == 0
 
     def test_zero_count_frame_renders_dark(self):
-        renderer = OffscreenRenderer(96, 200, audience_height=80, model_height=0, captions_height=0)
+        renderer = OffscreenRenderer(96, 200, audience_height=80, model_height=0)
         weights = np.zeros(96 * 200, dtype=np.float32)
         cap = renderer.config.lane_capacity
         chars = np.full(cap, ord("A"), dtype=np.uint32)
@@ -504,7 +424,6 @@ class TestLiveRenderer:
             canvas=_make_offscreen_canvas(32, 32),
             audience_height=0,
             model_height=0,
-            captions_height=0,
         )
         yield renderer
         renderer.close()
@@ -564,13 +483,13 @@ class TestLiveRenderer:
         device = get_device()
         weights = np.random.randn(32 * 32).astype(np.float32)
 
-        offscreen = OffscreenRenderer(32, 32, device=device, audience_height=0, model_height=0, captions_height=0)
+        offscreen = OffscreenRenderer(32, 32, device=device, audience_height=0, model_height=0)
         img_offscreen = offscreen.render(weights)
 
         canvas = _make_offscreen_canvas(32, 32)
         live = LiveRenderer(
             32, 32, device=device, fullscreen=False, canvas=canvas,
-            audience_height=0, model_height=0, captions_height=0,
+            audience_height=0, model_height=0,
         )
         live.update(weights)
         canvas.force_draw()
@@ -598,7 +517,6 @@ class TestDisplayScaling:
             display_size=(display_w, display_h),
             audience_height=0,
             model_height=0,
-            captions_height=0,
         )
         weights = np.random.randn(logical_w * logical_h).astype(np.float32)
         live.update(weights)
@@ -620,7 +538,7 @@ class TestDisplayScaling:
         data[:logical_w * (logical_h // 2)] = 1.0
         data[logical_w * (logical_h // 2):] = -1.0
 
-        offscreen = OffscreenRenderer(logical_w, logical_h, device=device, audience_height=0, model_height=0, captions_height=0)
+        offscreen = OffscreenRenderer(logical_w, logical_h, device=device, audience_height=0, model_height=0)
         img_full = offscreen.render(data)
 
         canvas = _make_offscreen_canvas(display_w, display_h)
@@ -633,7 +551,6 @@ class TestDisplayScaling:
             display_size=(display_w, display_h),
             audience_height=0,
             model_height=0,
-            captions_height=0,
         )
         live.update(data)
         canvas.force_draw()
@@ -655,7 +572,7 @@ class TestDisplayScaling:
         canvas_a = _make_offscreen_canvas(32, 32)
         live_a = LiveRenderer(
             32, 32, device=device, fullscreen=False, canvas=canvas_a,
-            audience_height=0, model_height=0, captions_height=0,
+            audience_height=0, model_height=0,
         )
         live_a.update(weights)
         canvas_a.force_draw()
@@ -670,7 +587,6 @@ class TestDisplayScaling:
             display_size=(32, 32),
             audience_height=0,
             model_height=0,
-            captions_height=0,
         )
         live_b.update(weights)
         canvas_b.force_draw()
@@ -696,7 +612,6 @@ class TestDisplayScaling:
             display_size=(display_w, display_h),
             model_height=80,
             audience_height=0,
-            captions_height=0,
         )
         weights = np.zeros(logical_w * logical_h, dtype=np.float32)
         cap = live.config.lane_capacity
@@ -714,7 +629,7 @@ class TestDisplayScaling:
 
 class TestOverlays:
     def _renderer(self):
-        return OffscreenRenderer(96, 64, audience_height=0, model_height=0, captions_height=0)
+        return OffscreenRenderer(96, 64, audience_height=0, model_height=0)
 
     def test_overlay_renders_in_dim_grey(self):
         r = self._renderer()

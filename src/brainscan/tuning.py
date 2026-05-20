@@ -67,14 +67,6 @@ DRONE_GAIN_DB = -18.0
 PULSE_HALF_LIFE_SECONDS = 0.5
 """Decay constant for commit and partial pulses (visual shimmer)."""
 
-# --- Captions footer ------------------------------------------------
-
-EVENT_LINE_DURATION_SECONDS = 5.0
-"""How long a captions event line stays on screen before clearing."""
-
-CURSOR_LABEL_PERIOD_SECONDS = 3.0
-"""How often the captions cursor label rotates to the next parameter name."""
-
 # --- Rebirth --------------------------------------------------------
 
 REBIRTH_FADE_DURATION_SECONDS = 2.0

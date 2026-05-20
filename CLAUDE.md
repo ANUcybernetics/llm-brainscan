@@ -4,10 +4,10 @@
 
 Visualise a character-level GPT's weight matrices during training on an 8K
 display (one pixel per parameter). The model has ~30M params; the bottom 224px
-of the display is a three-band text strip carrying a live conversation between
-the audience (via mic) and the model (via streaming generation), plus a
-whispered captions footer. The piece resets at a configured wall-clock time
-each day so visitors at the same time of day see the same stage of learning.
+of the display is a two-lane text strip carrying a live conversation between
+the audience (via mic) and the model (via streaming generation). The piece
+resets at a configured wall-clock time each day so visitors at the same time
+of day see the same stage of learning.
 
 ## Stack
 
@@ -31,14 +31,13 @@ src/brainscan/
 │                   #   (with partial_callback + speech_end_callback)
 ├── tts.py          # TTSEngine wrapper around piper (optional, no-op when off)
 ├── lanes.py        # LaneBuffer circular char buffer (partial/committed)
-├── captions.py     # CaptionsState, compose_caption() for the 32px footer
 ├── conversation.py # MUSE/LISTENING/RESPONDING state machine, Conversation.step()
 ├── rebirth.py      # rotate_audience_log(), rebirth(), RebirthScheduler
 ├── audio_drone.py  # Optional sub-bass DroneOscillator tracking loss
 ├── snapshot.py     # capture_weights() --- detached clone of all model params
 ├── layout.py       # maps param tensors to 8K canvas (left-to-right sections)
 ├── font.py         # bitmap font atlas (8x16 glyphs) for GPU text rendering
-├── renderer.py     # RenderConfig, RenderResources, LaneFrame, CaptionsFrame,
+├── renderer.py     # RenderConfig, RenderResources, LaneFrame,
 │                   #   create_render_pipeline(), draw()
 └── train.py        # training loop driven by Conversation.step()
 tests/
@@ -48,12 +47,11 @@ tests/
 ├── test_snapshot.py       # capture_weights
 ├── test_layout.py         # sections, compute_layout, overlaps, ordering
 ├── test_font.py           # font atlas shape and glyph coverage
-├── test_renderer.py       # three-band rendering, lane scroll, display scaling
+├── test_renderer.py       # two-lane rendering, lane scroll, display scaling
 ├── test_text_buffer.py    # TextBuffer append, persistence, rotate
 ├── test_stt.py            # speech detection, transcription, partial/end callbacks
 ├── test_tts.py            # TTSEngine enabled/disabled paths (mocked piper)
 ├── test_lanes.py          # LaneBuffer push, replace_tail, commit_partial
-├── test_captions.py       # compose_caption layout
 ├── test_conversation.py   # state machine transitions, timing, cooldown
 ├── test_rebirth.py        # rotate_audience_log, rebirth(), RebirthScheduler
 ├── test_audio_drone.py    # DroneOscillator loss-to-pitch mapping
@@ -83,22 +81,19 @@ zero-padded so overlays never occlude weight data.
 The default model is `n_embd=540`, which yields ~28 M parameters and leaves
 margin for the new chrome inside the 4096 px weight region.
 
-The bottom 224px is split into three horizontal bands:
+The bottom 224px is split into two horizontal lanes:
 
 ```
 y = 4096 ───────────────────────────────────────
-         AUDIENCE LANE   96px   4× scale, 240 cols × 1 row, warm cream
-y = 4192 ───────────────────────────────────────
-         MODEL LANE      96px   4× scale, 240 cols × 1 row, cool ramp
-y = 4288 ───────────────────────────────────────
-         CAPTIONS FOOTER 32px   2× scale, 480 chars, dim grey
+         AUDIENCE LANE  112px   4× scale, 240 cols × 1 row, warm cream
+y = 4208 ───────────────────────────────────────
+         MODEL LANE     112px   4× scale, 240 cols × 1 row, cool ramp
 y = 4320 ───────────────────────────────────────
 ```
 
 Each lane is a single row of 240 chars at 4× scale (32×64 px glyphs); the right
 edge is "now" and older chars drift left. Sub-pixel scrolling is driven by per-
-lane `*_offset_px` uniforms. The captions footer is unscrolled and rendered at
-2× scale (16×32 px glyphs).
+lane `*_offset_px` uniforms.
 
 The weight layout is defined by `Section` objects in `layout.py`. The
 `compute_layout` function assigns pixel coordinates; `layout_to_flat_order`
@@ -109,26 +104,24 @@ gives the flattening order for the renderer's storage buffer.
 1. Capture weights as a dict of tensors (`snapshot.py:capture_weights`).
 2. Build a flat weight buffer (`train.py:_build_weight_buffer`) --- flattens
    in layout order, zero-pads to canvas size.
-3. Snapshot the audience and model `LaneBuffer`s into `LaneFrame`s; compose
-   the captions row into a `CaptionsFrame` (`train.py:_build_lane_frames`).
-4. Upload raw weights, font atlas, and the three lane/captions buffers to
-   wgpu storage buffers.
+3. Snapshot the audience and model `LaneBuffer`s into `LaneFrame`s
+   (`train.py:_build_lane_frames`).
+4. Upload raw weights, font atlas, and the two lane buffers to wgpu storage
+   buffers.
 5. Fragment shader normalises weights by `vmax`, applies colourmap per pixel
-   (weight region) and renders three text bands with their own colour rules
+   (weight region) and renders two text lanes with their own colour rules
    (audience: warm cream, dimmed for `ATTR_PARTIAL`, slightly dimmer for
-   `ATTR_SOURCE_TAG`; model: cool blue-cream brightness `0.25 + prob * 0.75`;
-   captions: dim grey on charcoal).
+   `ATTR_SOURCE_TAG`; model: cool blue-cream brightness `0.25 + prob * 0.75`).
 6. Read back as RGBA numpy array (offscreen) or present to display (live).
 
 GPU resources are managed via dataclasses and pure functions:
 - `RenderConfig` (frozen dataclass): width, height, colormap, lane heights.
-  Defaults audience/model/captions heights to 0 (lanes disabled); the train
-  CLI passes the production `90/90/12`.
-- `LaneFrame` / `CaptionsFrame`: per-lane payload (chars, attrs/probs,
-  count, offset_px).
+  Defaults audience/model heights to 0 (lanes disabled); the train CLI
+  passes the production `112/112`.
+- `LaneFrame`: per-lane payload (chars, attrs/probs, count, offset_px).
 - `RenderResources` (dataclass): GPU buffers, bind group, pipeline.
 - `create_render_pipeline(config, device, format)` → `RenderResources`.
-- `draw(resources, target_view, weights, audience=, model=, captions=)`.
+- `draw(resources, target_view, weights, audience=, model=)`.
 
 Two renderer classes provide the high-level API:
 - `OffscreenRenderer`: headless via Vulkan, returns numpy array (no display).
@@ -237,8 +230,8 @@ re-trigger on the model's own playback.
   conversation driver to pace generation against wall-clock time.
 - `train.py:_build_weight_buffer(weights, flat_order, canvas_pixels)` ---
   flatten weights into a zero-padded float32 array.
-- `train.py:_build_lane_frames(convo, captions_state)` --- snapshot the
-  conversation's lane buffers and caption state into renderer payloads.
+- `train.py:_build_lane_frames(convo)` --- snapshot the conversation's
+  audience and model lane buffers into renderer payloads.
 - `Conversation.step(now, listener_snapshot, token_fn)` --- advance the
   state machine; returns `StepEvents` describing requested side effects.
 - `rebirth(model, audience_dir, persist_count, seed)` --- reset weights
