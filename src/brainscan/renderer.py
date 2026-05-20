@@ -710,6 +710,18 @@ class LiveRenderer:
         self.height = height
         self.device = device or get_device()
 
+        if fullscreen and display_size is None and canvas is None:
+            # Size the GLFW window to the primary monitor up front so the wgpu
+            # surface is configured at the physical screen size from the start.
+            # Without this, the surface is born at the logical canvas size
+            # (e.g. 7680x4320) and a later resize in _go_fullscreen can leave
+            # the swapchain mis-sized, cropping the bottom of the render.
+            import glfw  # type: ignore[import]
+
+            glfw.init()
+            mode = glfw.get_video_mode(glfw.get_primary_monitor())
+            display_size = (mode.size.width, mode.size.height)
+
         window_w, window_h = display_size or (width, height)
 
         if canvas is None:
