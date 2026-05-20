@@ -856,10 +856,10 @@ class LiveRenderer:
         draw(self._res, texture.create_view(), weights, audience, model, captions, global_brightness)
 
     def _go_fullscreen(self) -> None:
-        # Borderless-fullscreen rather than glfw.set_window_monitor: GNOME
-        # / Mutter doesn't honour exclusive fullscreen reliably on X11 and
-        # leaves a title bar in place. Stripping decorations and sizing to
-        # the monitor works on both Mutter and plain GLFW window managers.
+        # Strip decorations and size to the monitor; on GNOME / Mutter that
+        # still leaves the top panel in place, so also send the EWMH
+        # _NET_WM_STATE_FULLSCREEN hint via wmctrl. glfw.set_window_monitor
+        # (exclusive fullscreen) doesn't behave reliably under Mutter.
         import glfw  # type: ignore[import]
 
         window = self._canvas._window  # type: ignore[union-attr]
@@ -872,6 +872,19 @@ class LiveRenderer:
         glfw.set_window_attrib(window, glfw.AUTO_ICONIFY, glfw.FALSE)
         glfw.set_window_pos(window, 0, 0)
         glfw.set_window_size(window, w, h)
+
+        if hasattr(glfw, "get_x11_window"):
+            xid = glfw.get_x11_window(window)
+            if xid:
+                import subprocess
+
+                subprocess.run(
+                    [
+                        "wmctrl", "-i", "-r", f"0x{xid:08x}",
+                        "-b", "add,fullscreen",
+                    ],
+                    check=False, timeout=2,
+                )
 
     def run(self) -> None:
         """Enter the canvas event loop (blocks until the window is closed)."""
