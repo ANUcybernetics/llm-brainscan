@@ -282,7 +282,19 @@ Live exhibition runs as a user-level systemd service. The unit file is
 `graphical-session.target` so it starts only after the auto-login X
 session is up.
 
-Install / refresh from a clean repo on the Jetson:
+System packages required on the Jetson (beyond a base JetPack install):
+
+```sh
+sudo apt install -y wmctrl     # EWMH fullscreen — without it the GNOME
+                               # top panel stays visible over the canvas
+```
+
+Network setup for kiosk installs that rely on WiFi (e.g. ANU-Secure):
+edit `deploy/install-wifi.sh` with the site's WPA2-Enterprise credentials,
+uncomment the nmcli block, and run as root. The resulting NetworkManager
+profile autoconnects on boot and survives reflashes-with-backup.
+
+Install / refresh the brainscan service from a clean repo on the Jetson:
 
 ```sh
 mkdir -p ~/.config/systemd/user
