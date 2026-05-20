@@ -7,6 +7,8 @@ strip), and then added to the training data. The model's brain is displayed
 on an 8K canvas, one pixel per parameter.
 """
 
+from __future__ import annotations
+
 import argparse
 import datetime as dt
 import hashlib
@@ -16,11 +18,15 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
 
 from brainscan import tuning
+
+if TYPE_CHECKING:
+    from brainscan.stt import SpeechListener
 from brainscan.conversation import (
     Conversation,
     ConversationState,
@@ -166,7 +172,7 @@ def _process_committed(
         training.append(text)
 
 
-def _build_listener(args) -> object | None:
+def _build_listener(args) -> SpeechListener | None:
     """Construct a SpeechListener (unstarted) so the caller can wire
     callbacks before audio capture begins. Returns None when --no-mic."""
     if args.no_mic:

@@ -25,6 +25,7 @@ class TestRotateAudienceLog:
         result = rotate_audience_log(src, target_dir, dt.date(2026, 4, 25))
 
         assert result == target_dir / "2026-04-25.txt"
+        assert result is not None
         assert result.read_text() == "hello world"
         assert not src.exists()
 
@@ -57,6 +58,7 @@ class TestRotateAudienceLog:
 
         result = rotate_audience_log(src, target_dir, dt.date(2026, 4, 25))
 
+        assert result is not None
         assert result.read_text() == "new"
 
 

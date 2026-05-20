@@ -189,7 +189,7 @@ class TestRunAudio:
         mock_stream.__enter__ = MagicMock(return_value=mock_stream)
         mock_stream.__exit__ = MagicMock(return_value=False)
         input_stream = MagicMock(return_value=mock_stream)
-        sys.modules["sounddevice"].InputStream = input_stream  # type: ignore[attr-defined]
+        setattr(sys.modules["sounddevice"], "InputStream", input_stream)
 
         listener._run_audio()
         return input_stream
@@ -344,8 +344,10 @@ class TestPipelineIntegration:
         mock_stream.read = mock_read
         mock_stream.__enter__ = MagicMock(return_value=mock_stream)
         mock_stream.__exit__ = MagicMock(return_value=False)
-        sys.modules["sounddevice"].InputStream = MagicMock(  # type: ignore[attr-defined]
-            return_value=mock_stream
+        setattr(
+            sys.modules["sounddevice"],
+            "InputStream",
+            MagicMock(return_value=mock_stream),
         )
 
         listener.start()

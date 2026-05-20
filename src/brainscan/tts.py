@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import numpy as np
 
@@ -10,14 +11,19 @@ from brainscan import tuning
 
 log = logging.getLogger(__name__)
 
-try:  # optional dependency
-    import sounddevice as sd
-except Exception:  # pragma: no cover - sounddevice is in main deps but mocked in tests
-    sd = None  # type: ignore[assignment]
+# Typed as Any so the None fallback below stays assignable; in production
+# sounddevice is a main dep, but tests stub it out and CI machines may not
+# have an audio driver available at import time.
+sd: Any = None
+try:
+    import sounddevice as _sounddevice
+    sd = _sounddevice
+except Exception:  # pragma: no cover
+    pass
 
 
-def _load_voice(voice: str) -> object:
-    from piper import PiperVoice  # type: ignore[import-not-found]
+def _load_voice(voice: str) -> Any:
+    from piper import PiperVoice  # ty: ignore[unresolved-import]
 
     return PiperVoice.load(voice)
 
@@ -32,7 +38,7 @@ class TTSEngine:
         self.enabled = enabled
         self.voice_name = voice
         self.gain_db = gain_db
-        self._voice: object | None = None
+        self._voice: Any = None
 
         if enabled:
             try:
@@ -45,9 +51,9 @@ class TTSEngine:
         if not self.enabled or self._voice is None or not text.strip():
             return 0.0
 
-        sample_rate = int(getattr(self._voice.config, "sample_rate", 22050))  # type: ignore[union-attr]
+        sample_rate = int(getattr(self._voice.config, "sample_rate", 22050))
         chunks: list[bytes] = []
-        for piece in self._voice.synthesize(text):  # type: ignore[union-attr]
+        for piece in self._voice.synthesize(text):
             chunks.append(piece.audio_int16_bytes)
 
         raw = b"".join(chunks)

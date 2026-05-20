@@ -39,6 +39,9 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 [tool.hatch.build.targets.wheel]
 packages = ["src/brainscan"]
 
+[tool.ty.src]
+exclude = ["scripts/"]
+
 [tool.uv]
 override-dependencies = ["onnxruntime<1.24", "numpy<2"]
 

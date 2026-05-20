@@ -22,16 +22,22 @@ attributes; set them either via the constructor or by direct assignment
 *before* calling `start()` to avoid losing early speech events.
 """
 
+from __future__ import annotations
+
 import logging
 import queue
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from brainscan import tuning
+
+if TYPE_CHECKING:
+    from faster_whisper import WhisperModel
 
 log = logging.getLogger(__name__)
 
@@ -72,8 +78,8 @@ def is_speech(audio: np.ndarray, threshold: float) -> bool:
     return float(np.sqrt(np.mean(audio**2))) > threshold
 
 
-def transcribe(model: object, audio: np.ndarray) -> str:
-    segments, _info = model.transcribe(  # type: ignore[union-attr]
+def transcribe(model: WhisperModel, audio: np.ndarray) -> str:
+    segments, _info = model.transcribe(
         audio,
         language="en",
         vad_filter=True,
@@ -81,7 +87,7 @@ def transcribe(model: object, audio: np.ndarray) -> str:
     return " ".join(seg.text.strip() for seg in segments)
 
 
-def load_whisper_model(config: SpeechConfig) -> object:
+def load_whisper_model(config: SpeechConfig) -> WhisperModel:
     from faster_whisper import WhisperModel
 
     return WhisperModel(
@@ -108,7 +114,7 @@ class SpeechListener:
         self._stop_event = threading.Event()
         self._audio_thread: threading.Thread | None = None
         self._processor_thread: threading.Thread | None = None
-        self._model: object | None = None
+        self._model: WhisperModel | None = None
 
         self._speech_buffer: list[np.ndarray] = []
         self._in_speech: bool = False
@@ -245,9 +251,11 @@ class SpeechListener:
         method sets the flag and the worker clears it on exit.
         """
         self._partial_pending.set()
+        assert self._model is not None
 
         def worker() -> None:
             try:
+                assert self._model is not None
                 text = transcribe(self._model, audio)
                 cb = self.partial_callback
                 if text and cb is not None:

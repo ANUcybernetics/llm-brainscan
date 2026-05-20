@@ -17,11 +17,16 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import wgpu
 
 from brainscan.layout import TextOverlay
+
+if TYPE_CHECKING:
+    from rendercanvas.contexts import WgpuContext
+    from rendercanvas.glfw import RenderCanvas
 
 SHADER_SOURCE = """
 const ATTR_PARTIAL: u32 = 1u;
@@ -280,7 +285,7 @@ _UNIFORM_DTYPE = np.dtype([
 ])
 
 
-def _pick_surface_format(context: wgpu.GPUCanvasContext, device: wgpu.GPUDevice) -> str:
+def _pick_surface_format(context: WgpuContext, device: wgpu.GPUDevice) -> str:
     preferred = context.get_preferred_format(device.adapter)
     if "srgb" not in preferred:
         return preferred
@@ -703,7 +708,7 @@ class LiveRenderer:
         model_height: int = 0,
         fullscreen: bool = True,
         max_fps: int = 30,
-        canvas: object | None = None,
+        canvas: RenderCanvas | None = None,
         display_size: tuple[int, int] | None = None,
     ):
         self.width = width
@@ -716,7 +721,7 @@ class LiveRenderer:
             # Without this, the surface is born at the logical canvas size
             # (e.g. 7680x4320) and a later resize in _go_fullscreen can leave
             # the swapchain mis-sized, cropping the bottom of the render.
-            import glfw  # type: ignore[import]
+            import glfw
 
             glfw.init()
             mode = glfw.get_video_mode(glfw.get_primary_monitor())
@@ -733,9 +738,9 @@ class LiveRenderer:
                 update_mode="continuous",
                 max_fps=max_fps,
             )
-        self._canvas = canvas
+        self._canvas: RenderCanvas = canvas
 
-        self._context = self._canvas.get_wgpu_context()  # type: ignore[union-attr]
+        self._context = self._canvas.get_wgpu_context()
         surface_format = _pick_surface_format(self._context, self.device)
         self._context.configure(device=self.device, format=surface_format)
 
@@ -755,7 +760,7 @@ class LiveRenderer:
         if fullscreen:
             self._go_fullscreen()
 
-        self._canvas.request_draw(self._draw)  # type: ignore[union-attr]
+        self._canvas.request_draw(self._draw)
 
     def update(
         self,
@@ -781,7 +786,9 @@ class LiveRenderer:
         if weights is None:
             return
 
-        texture = self._context.get_current_texture()
+        # WgpuContext.get_current_texture is typed as `object` upstream;
+        # the runtime value is always a wgpu.GPUTexture.
+        texture = cast("wgpu.GPUTexture", self._context.get_current_texture())
         draw(self._res, texture.create_view(), weights, audience, model, global_brightness)
 
     def _go_fullscreen(self) -> None:
@@ -789,9 +796,11 @@ class LiveRenderer:
         # still leaves the top panel in place, so also send the EWMH
         # _NET_WM_STATE_FULLSCREEN hint via wmctrl. glfw.set_window_monitor
         # (exclusive fullscreen) doesn't behave reliably under Mutter.
-        import glfw  # type: ignore[import]
+        import glfw
 
-        window = self._canvas._window  # type: ignore[union-attr]
+        # _window is a private rendercanvas internal not in the public API
+        # but stable across the versions we use.
+        window = self._canvas._window
         if window is None:
             raise RuntimeError("LiveRenderer: GLFW window was not created")
         monitor = glfw.get_primary_monitor()
@@ -817,11 +826,13 @@ class LiveRenderer:
 
     def run(self) -> None:
         """Enter the canvas event loop (blocks until the window is closed)."""
-        group = self._canvas._rc_canvas_group  # type: ignore[union-attr]
-        group.get_loop().run()
+        group = self._canvas._rc_canvas_group
+        loop = group.get_loop()
+        assert loop is not None, "RenderCanvas has no event loop"
+        loop.run()
 
     def close(self) -> None:
-        self._canvas.close()  # type: ignore[union-attr]
+        self._canvas.close()
 
     def set_overlays(self, overlays: list[TextOverlay]) -> None:
         upload_overlays(self._res, overlays)
