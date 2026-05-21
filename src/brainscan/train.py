@@ -121,6 +121,27 @@ def save_frame(canvas: np.ndarray, path: Path) -> None:
     img.save(path)
 
 
+def save_snapshot_avif(
+    canvas: np.ndarray,
+    path: Path,
+    target_size: tuple[int, int] = (3840, 2160),
+    quality: int = 85,
+) -> None:
+    from PIL import Image
+
+    img = Image.fromarray(canvas[:, :, :3])
+    img = img.resize(target_size, Image.Resampling.LANCZOS)
+    img.save(path, format="AVIF", quality=quality)
+
+
+def milestone_steps(total_steps: int, count: int) -> list[int]:
+    if count <= 0 or total_steps <= 0:
+        return []
+    if count == 1:
+        return [0]
+    return [round(i * (total_steps - 1) / (count - 1)) for i in range(count)]
+
+
 def _build_weight_buffer(
     weights: dict[str, torch.Tensor],
     layout: dict,
@@ -208,6 +229,12 @@ def main() -> None:
         type=int,
         default=10,
         help="Capture/render every N steps",
+    )
+    parser.add_argument(
+        "--snapshot-count",
+        type=int,
+        default=0,
+        help="Save N AVIF snapshots evenly spaced across --steps (0 disables)",
     )
     parser.add_argument("--output-dir", type=str, default="output")
     parser.add_argument(
@@ -312,6 +339,12 @@ def main() -> None:
     frames_dir = output_dir / "frames"
     if args.save_images:
         frames_dir.mkdir(parents=True, exist_ok=True)
+    snapshots_dir = output_dir / "snapshots"
+    milestones = milestone_steps(args.steps, args.snapshot_count)
+    milestone_set = set(milestones)
+    if milestones:
+        snapshots_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Snapshots: {len(milestones)} AVIFs at steps {milestones}")
 
     data_dir = Path("data")
     data_dir.mkdir(exist_ok=True)
@@ -364,7 +397,7 @@ def main() -> None:
     print(f"\nLayout saved to {layout_path}")
 
     offscreen_renderer = None
-    if args.save_images:
+    if args.save_images or milestones:
         offscreen_renderer = OffscreenRenderer(
             WIDTH,
             HEIGHT,
@@ -402,6 +435,9 @@ def main() -> None:
     def train_loop() -> None:
         nonlocal training_data
         optimiser = torch.optim.AdamW(model.parameters(), lr=args.lr)
+        amp_enabled = device.type == "cuda"
+        if amp_enabled:
+            print("AMP: bfloat16 autocast enabled on CUDA")
 
         convo = Conversation(
             tts_enabled=args.speak,
@@ -508,7 +544,12 @@ def main() -> None:
                     seed_corpus=seed_corpus,
                     seed_weight=tuning.SEED_CORPUS_SAMPLING_WEIGHT,
                 )
-                _, loss = model(x, y)
+                with torch.autocast(
+                    device_type=device.type,
+                    dtype=torch.bfloat16,
+                    enabled=amp_enabled,
+                ):
+                    _, loss = model(x, y)
                 optimiser.zero_grad()
                 loss.backward()
                 optimiser.step()
@@ -574,17 +615,20 @@ def main() -> None:
                         if live_renderer is not None:
                             live_renderer.set_overlays(new_overlays)
 
-                if step % args.snapshot_every == 0:
+                is_periodic = step % args.snapshot_every == 0
+                is_milestone = step in milestone_set
+                if is_periodic or is_milestone:
                     current_weights = capture_weights(model)
-                    if drone is not None:
-                        drone.update_loss(loss.item())
-                    dt_elapsed = time.time() - t0
-                    print(
-                        f"step {step:5d} | loss {loss.item():.4f}"
-                        f" | seed {len(seed_corpus):,}B"
-                        f" | aud {len(training_data):,}B"
-                        f" | {dt_elapsed:.1f}s | {convo.state.value}"
-                    )
+                    if is_periodic:
+                        if drone is not None:
+                            drone.update_loss(loss.item())
+                        dt_elapsed = time.time() - t0
+                        print(
+                            f"step {step:6d} | loss {loss.item():.4f}"
+                            f" | seed {len(seed_corpus):,}B"
+                            f" | aud {len(training_data):,}B"
+                            f" | {dt_elapsed:.1f}s | {convo.state.value}"
+                        )
 
                     commit_val = commit_pulse.decay(now_t)
                     partial_val = partial_pulse.decay(now_t)
@@ -594,7 +638,9 @@ def main() -> None:
                         partial_pulse=partial_val,
                     )
 
-                    if offscreen_renderer is not None:
+                    if offscreen_renderer is not None and (
+                        args.save_images or is_milestone
+                    ):
                         buf = _build_weight_buffer(
                             current_weights,
                             layout,
@@ -607,11 +653,17 @@ def main() -> None:
                             model=model_frame,
                             global_brightness=global_brightness,
                         )
-                        save_frame(
-                            canvas, frames_dir / f"frame_{step:06d}.png"
-                        )
+                        if is_periodic and args.save_images:
+                            save_frame(
+                                canvas, frames_dir / f"frame_{step:06d}.png"
+                            )
+                        if is_milestone:
+                            day_idx = milestones.index(step)
+                            avif_path = snapshots_dir / f"snapshot_day_{day_idx}.avif"
+                            save_snapshot_avif(canvas, avif_path)
+                            print(f"  -> saved {avif_path.name} (step {step})")
 
-                    if live_renderer is not None:
+                    if live_renderer is not None and is_periodic:
                         buf = _build_weight_buffer(
                             current_weights, layout, WIDTH, HEIGHT,
                         )
