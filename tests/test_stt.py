@@ -78,6 +78,16 @@ class TestTranscribe:
         result = transcribe(mock_model, np.zeros(3200, dtype=np.float32))
         assert result == "hello world"
 
+    def test_whitespace_only_segments_return_empty(self):
+        # Whisper returns empty segments for silence; joined with " " they
+        # form a truthy run of spaces unless the result is stripped.
+        seg1 = MagicMock(); seg1.text = " "
+        seg2 = MagicMock(); seg2.text = "  "
+        mock_model = MagicMock()
+        mock_model.transcribe.return_value = ([seg1, seg2], None)
+        result = transcribe(mock_model, np.zeros(3200, dtype=np.float32))
+        assert result == ""
+
 
 class TestSpeechConfig:
     def test_defaults(self):
@@ -124,6 +134,17 @@ class TestDoTranscribe:
     def test_empty_transcription_not_queued(self, listener):
         mock_model = MagicMock()
         mock_model.transcribe.return_value = ([], None)
+        listener._model = mock_model
+        listener._do_transcribe([np.random.randn(3200).astype(np.float32)])
+        assert listener.get_text() == []
+
+    def test_whitespace_transcription_not_queued(self, listener):
+        # Silence transcribes to empty/whitespace segments; nothing should
+        # reach the text queue (no spurious "> mic > " tag downstream).
+        seg1 = MagicMock(); seg1.text = " "
+        seg2 = MagicMock(); seg2.text = "  "
+        mock_model = MagicMock()
+        mock_model.transcribe.return_value = ([seg1, seg2], None)
         listener._model = mock_model
         listener._do_transcribe([np.random.randn(3200).astype(np.float32)])
         assert listener.get_text() == []

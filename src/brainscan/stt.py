@@ -84,7 +84,9 @@ def transcribe(model: WhisperModel, audio: np.ndarray) -> str:
         language="en",
         vad_filter=True,
     )
-    return " ".join(seg.text.strip() for seg in segments)
+    # Collapse whitespace-only joins (Whisper emits empty segments for
+    # silence) to an empty string so the caller's emptiness check rejects them.
+    return " ".join(seg.text.strip() for seg in segments).strip()
 
 
 def load_whisper_model(config: SpeechConfig) -> WhisperModel:
