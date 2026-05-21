@@ -64,9 +64,25 @@ mise exec -- uv run python -m brainscan.train --live
 mise exec -- uv run python -m brainscan.train --live --save-images
 ```
 
-This downloads Tiny Shakespeare on first run and trains the model. `--live`
-opens a fullscreen window showing weight matrices in real time (one pixel per
-parameter). `--save-images` writes frames to `output/frames/`.
+`--live` opens a fullscreen window showing weight matrices in real time (one
+pixel per parameter). `--save-images` writes frames to `output/frames/`.
+
+### Seed corpus
+
+The exhibition uses **PG-19** (~11 GB of Project Gutenberg books published
+before 1919) as its seed corpus. On the Jetson it lives at `/ssd/brainscan/data/pg19.bin` and
+is passed via `--data`. Build it once with the inline-deps download script:
+
+```sh
+mise exec -- uv run scripts/download_pg19.py data/pg19.bin
+mise exec -- uv run python -m brainscan.train --data data/pg19.bin
+```
+
+If `--data` is omitted the train loop falls back to **Tiny Shakespeare**
+(~1 MB, auto-downloaded to `data/shakespeare.txt`). That is only useful for
+quick dev runs and tests — at 28 M parameters the model memorises it within a
+few thousand steps, so weight evolution stops being interesting almost
+immediately.
 
 ## Architecture
 
