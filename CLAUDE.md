@@ -140,7 +140,7 @@ Three states:
   appear in the audience lane in greyed colour (`ATTR_PARTIAL`); muse pacing
   slows to one token per ~600ms.
 - **RESPONDING**: triggered when Whisper commits. The committed text is
-  promoted to full brightness with a `▸ mic ▸ ` source-tag prefix; the muse
+  promoted to full brightness with a `> mic > ` source-tag prefix; the muse
   generator is interrupted and replaced by a generator seeded with the
   committed text, running at one token per ~50ms (~3s for 60 tokens). When
   TTS is enabled, the response text is also spoken aloud. After completion a

@@ -106,9 +106,9 @@ class TestLaneBufferReplaceTail:
     def test_commit_partial_clears_partial_bit(self):
         buf = LaneBuffer(capacity=16)
         buf.replace_tail("hi", attrs=ATTR_PARTIAL)
-        buf.commit_partial(prefix="▸ mic ▸ ", attrs=ATTR_SOURCE_TAG)
+        buf.commit_partial(prefix="> mic > ", attrs=ATTR_SOURCE_TAG)
         chars, attrs, _ = buf.snapshot()
-        expected = list("▸ mic ▸ ".encode("utf-8"))
+        expected = list("> mic > ".encode("utf-8"))
         assert chars[0] == expected[0]
         assert not (attrs[buf.count - 1] & ATTR_PARTIAL)
 
@@ -146,7 +146,7 @@ class TestLaneBufferOverflow:
 class TestLaneBufferSourceTag:
     def test_push_with_source_tag(self):
         buf = LaneBuffer(capacity=16)
-        buf.push_text("▸ mic ▸ ", attrs=ATTR_SOURCE_TAG)
+        buf.push_text("> mic > ", attrs=ATTR_SOURCE_TAG)
         _chars, attrs, _ = buf.snapshot()
         for i in range(buf.count):
             assert attrs[i] & ATTR_SOURCE_TAG

@@ -4,6 +4,7 @@ from brainscan.conversation import (
     ListenerSnapshot,
     SpeakEvent,
 )
+from brainscan.lanes import ATTR_SOURCE_TAG
 
 
 def _muse_token(_now):
@@ -91,6 +92,39 @@ class TestRespondingTransition:
         assert c.state == ConversationState.RESPONDING
         # response generation seeded with the committed text — so a response token was produced
         assert ev.token_count >= 0  # responding rate is fast; at the same instant the seed loads
+
+    def test_committed_body_is_full_brightness(self):
+        c = Conversation()
+        c.step(
+            now=0.0,
+            listener=make_listener(in_speech=True, partial="hi"),
+            token_fn=_muse_token,
+        )
+        c.step(
+            now=0.5,
+            listener=make_listener(committed=["hi"]),
+            token_fn=_resp_token,
+        )
+        _chars, attrs, _probs = c.audience.snapshot()
+        tag_len = len(c.source_tag)
+        # the "> mic > " prefix carries the dim source-tag attr
+        assert all(attrs[i] & ATTR_SOURCE_TAG for i in range(tag_len))
+        # the committed body does not; it renders at full cream brightness
+        assert all(attrs[i] == 0 for i in range(tag_len, c.audience.count))
+
+    def test_commit_with_no_partial_shows_committed_text(self):
+        # A short utterance can commit before any partial is displayed; the
+        # tag must still show the committed transcript, not a bare "> mic > ".
+        c = Conversation()
+        c.step(now=0.0, listener=make_listener(), token_fn=_muse_token)
+        c.step(
+            now=0.5,
+            listener=make_listener(committed=["yes"]),
+            token_fn=_resp_token,
+        )
+        chars, _attrs, _probs = c.audience.snapshot()
+        text = bytes(chars.tolist()[: c.audience.count]).decode("ascii")
+        assert text == "> mic > yes"
 
     def test_response_completes_then_cooldown(self):
         c = Conversation(

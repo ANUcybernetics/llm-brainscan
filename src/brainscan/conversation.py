@@ -16,7 +16,6 @@ from typing import Callable
 from brainscan import tuning
 from brainscan.lanes import (
     ATTR_PARTIAL,
-    ATTR_SOURCE_TAG,
     LaneBuffer,
 )
 
@@ -100,7 +99,12 @@ class Conversation:
     def _maybe_enter_responding(self, now: float, listener: ListenerSnapshot) -> None:
         if not listener.committed:
             return
-        self.audience.commit_partial(prefix=self.source_tag, attrs=ATTR_SOURCE_TAG)
+        # Set the tag body from the committed transcript itself, not from
+        # whatever partial was on screen: a short utterance can commit
+        # before any partial appears, which would leave a bare "> mic > ".
+        # commit_partial's default attrs=0 keeps the body full-brightness.
+        self.audience.replace_tail(listener.committed[-1])
+        self.audience.commit_partial(prefix=self.source_tag)
         self.state = ConversationState.RESPONDING
         self._last_token_t = -1.0
         self._response_remaining = self.response_token_count
