@@ -126,7 +126,8 @@ GPU resources are managed via dataclasses and pure functions:
 Two renderer classes provide the high-level API:
 - `OffscreenRenderer`: headless via Vulkan, returns numpy array (no display).
 - `LiveRenderer`: fullscreen window via rendercanvas/GLFW, training runs in
-  background thread, `update()` pushes data thread-safely, `--live` flag.
+  background thread, `update()` (full frame) and `update_lanes()` (text strip
+  only, decoupled from weight capture) push data thread-safely, `--live` flag.
 
 ## Conversation state machine
 

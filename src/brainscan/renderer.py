@@ -562,7 +562,17 @@ def draw(
     model: LaneFrame | None = None,
     global_brightness: float = 1.0,
     stretch_k: float = tuning.WEIGHT_STRETCH_K,
+    vmax: float | None = None,
+    upload_weights: bool = True,
 ) -> None:
+    """Render one frame to ``target_view``.
+
+    ``vmax`` overrides the normalisation max; when ``None`` it is computed
+    from ``flat_weights``. With ``upload_weights=False`` the weight storage
+    buffer is not re-written and whatever was last uploaded is reused; the
+    live renderer sets this when only the text lanes changed, so an
+    unchanged weight buffer is not re-sent to the GPU on every present.
+    """
     device = res.device
     param_count = len(flat_weights)
 
@@ -598,7 +608,8 @@ def draw(
             model.attrs_or_probs.astype(np.float32).tobytes(),
         )
 
-    vmax = float(np.max(np.abs(flat_weights))) if param_count > 0 else 0.0
+    if vmax is None:
+        vmax = float(np.max(np.abs(flat_weights))) if param_count > 0 else 0.0
 
     model_caret_col_val = np.uint32(0xFFFFFFFF)
     audience_pulse_val = np.float32(0.0)
@@ -628,9 +639,10 @@ def draw(
         res.uniform_buffer, 0, res.uniform_data.tobytes()
     )
 
-    device.queue.write_buffer(
-        res.weight_buffer, 0, flat_weights.astype(np.float32).tobytes()
-    )
+    if upload_weights:
+        device.queue.write_buffer(
+            res.weight_buffer, 0, flat_weights.astype(np.float32).tobytes()
+        )
 
     command_encoder = device.create_command_encoder()
     render_pass = command_encoder.begin_render_pass(
@@ -773,6 +785,8 @@ class LiveRenderer:
 
         self._lock = threading.Lock()
         self._flat_weights: np.ndarray | None = None
+        self._vmax: float = 0.0
+        self._weights_dirty: bool = False
         self._audience: LaneFrame | None = None
         self._model: LaneFrame | None = None
         self._global_brightness: float = 1.0
@@ -791,17 +805,46 @@ class LiveRenderer:
         global_brightness: float = 1.0,
         stretch_k: float = tuning.WEIGHT_STRETCH_K,
     ) -> None:
-        """Thread-safe update of weight and lane data for the next frame."""
+        """Thread-safe update of weight and lane data for the next frame.
+
+        Caches the normalisation max and marks the weight buffer dirty so the
+        next ``_draw`` re-uploads it. Use ``update_lanes()`` when the weights
+        have not changed, to skip that upload.
+        """
+        weights = flat_weights.astype(np.float32, copy=True)
+        vmax = float(np.max(np.abs(weights))) if weights.size else 0.0
         with self._lock:
-            self._flat_weights = flat_weights.astype(np.float32, copy=True)
+            self._flat_weights = weights
+            self._vmax = vmax
+            self._weights_dirty = True
             self._audience = audience
             self._model = model
             self._global_brightness = global_brightness
             self._stretch_k = stretch_k
 
+    def update_lanes(
+        self,
+        audience: LaneFrame | None = None,
+        model: LaneFrame | None = None,
+        global_brightness: float = 1.0,
+    ) -> None:
+        """Thread-safe update of just the text lanes and global brightness.
+
+        Leaves the cached weight buffer untouched, so the cheap per-loop
+        lane snapshot can refresh the bottom text strip (and the rebirth
+        fade) between the costly weight captures that drive ``update()``.
+        """
+        with self._lock:
+            self._audience = audience
+            self._model = model
+            self._global_brightness = global_brightness
+
     def _draw(self) -> None:
         with self._lock:
             weights = self._flat_weights
+            vmax = self._vmax
+            upload_weights = self._weights_dirty
+            self._weights_dirty = False
             audience = self._audience
             model = self._model
             global_brightness = self._global_brightness
@@ -815,7 +858,8 @@ class LiveRenderer:
         texture = cast("wgpu.GPUTexture", self._context.get_current_texture())
         draw(
             self._res, texture.create_view(), weights, audience, model,
-            global_brightness, stretch_k,
+            global_brightness, stretch_k, vmax=vmax,
+            upload_weights=upload_weights,
         )
 
     def _go_fullscreen(self) -> None:

@@ -617,6 +617,21 @@ def main() -> None:
 
                 is_periodic = step % args.snapshot_every == 0
                 is_milestone = step in milestone_set
+
+                # The two text lanes are cheap to snapshot, so refresh them
+                # every loop turn. This decouples the bottom text strip from
+                # the costly weight capture below: mic transcripts and model
+                # tokens reach the screen at the training-step rate rather
+                # than once per `--snapshot-every` steps.
+                commit_val = commit_pulse.decay(now_t)
+                partial_val = partial_pulse.decay(now_t)
+                audience, model_frame = _build_lane_frames(
+                    convo,
+                    commit_pulse=commit_val,
+                    partial_pulse=partial_val,
+                )
+
+                live_weights_pushed = False
                 if is_periodic or is_milestone:
                     current_weights = capture_weights(model)
                     if is_periodic:
@@ -629,14 +644,6 @@ def main() -> None:
                             f" | aud {len(training_data):,}B"
                             f" | {dt_elapsed:.1f}s | {convo.state.value}"
                         )
-
-                    commit_val = commit_pulse.decay(now_t)
-                    partial_val = partial_pulse.decay(now_t)
-                    audience, model_frame = _build_lane_frames(
-                        convo,
-                        commit_pulse=commit_val,
-                        partial_pulse=partial_val,
-                    )
 
                     if offscreen_renderer is not None and (
                         args.save_images or is_milestone
@@ -673,6 +680,17 @@ def main() -> None:
                             model=model_frame,
                             global_brightness=global_brightness,
                         )
+                        live_weights_pushed = True
+
+                # Any turn that didn't push a full weight frame still sends
+                # the lanes (and current rebirth brightness) on their own, so
+                # the text strip and the fade stay smooth between captures.
+                if live_renderer is not None and not live_weights_pushed:
+                    live_renderer.update_lanes(
+                        audience=audience,
+                        model=model_frame,
+                        global_brightness=global_brightness,
+                    )
 
                 step += 1
 

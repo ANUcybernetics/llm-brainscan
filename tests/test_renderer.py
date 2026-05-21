@@ -500,6 +500,79 @@ class TestLiveRenderer:
         np.testing.assert_array_equal(img_live, img_offscreen)
         live.close()
 
+    def test_update_lanes_refreshes_text_without_new_weights(self):
+        device = get_device()
+        canvas = _make_offscreen_canvas(96, 200)
+        live = LiveRenderer(
+            96, 200, device=device, fullscreen=False, canvas=canvas,
+            audience_height=0, model_height=80,
+        )
+        # Non-zero weights, so a dropped or stale weight buffer would show.
+        weights = np.linspace(-1.0, 1.0, 96 * 200, dtype=np.float32)
+        cap = live.config.lane_capacity
+
+        frame_a = LaneFrame(
+            chars=np.full(cap, ord("A"), dtype=np.uint32),
+            attrs_or_probs=np.ones(cap, dtype=np.float32),
+            count=cap,
+        )
+        live.update(weights, model=frame_a)
+        canvas.force_draw()
+        img_a = canvas._last_image.copy()
+
+        # A lane-only update changes the text strip on the next draw without
+        # re-uploading the weight buffer; the weight region must be identical
+        # (the GPU buffer and cached vmax are reused).
+        frame_b = LaneFrame(
+            chars=np.full(cap, ord("M"), dtype=np.uint32),
+            attrs_or_probs=np.ones(cap, dtype=np.float32),
+            count=cap,
+        )
+        live.update_lanes(model=frame_b)
+        assert live._flat_weights is not None
+        np.testing.assert_array_equal(
+            live._flat_weights, weights,
+            err_msg="update_lanes must not touch the cached weight buffer",
+        )
+        canvas.force_draw()
+        img_b = canvas._last_image.copy()
+
+        model_y = live.config.model_y
+        np.testing.assert_array_equal(
+            img_a[:model_y], img_b[:model_y],
+            err_msg="weight region must be unchanged when only lanes change",
+        )
+        assert not np.array_equal(img_a[model_y:], img_b[model_y:]), (
+            "model lane should change after update_lanes"
+        )
+        live.close()
+
+    def test_weights_dirty_flag_lifecycle(self, live_renderer):
+        # update() marks the weight buffer dirty; a draw consumes the flag.
+        assert live_renderer._weights_dirty is False
+        live_renderer.update(np.ones(32 * 32, dtype=np.float32))
+        assert live_renderer._weights_dirty is True
+        live_renderer._canvas.force_draw()
+        assert live_renderer._weights_dirty is False
+
+        # update_lanes() must not re-dirty the weights.
+        cap = live_renderer.config.lane_capacity
+        frame = LaneFrame(
+            chars=np.zeros(cap, dtype=np.uint32),
+            attrs_or_probs=np.ones(cap, dtype=np.float32),
+            count=cap,
+        )
+        live_renderer.update_lanes(model=frame)
+        assert live_renderer._weights_dirty is False
+
+        # a fresh update() dirties them again.
+        live_renderer.update(np.full(32 * 32, 0.5, dtype=np.float32))
+        assert live_renderer._weights_dirty is True
+
+    def test_update_caches_vmax(self, live_renderer):
+        live_renderer.update(np.full(32 * 32, -3.0, dtype=np.float32))
+        assert live_renderer._vmax == 3.0
+
 
 class TestDisplayScaling:
     def test_smaller_display_produces_output(self):
