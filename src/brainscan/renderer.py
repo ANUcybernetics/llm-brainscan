@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, cast
 import numpy as np
 import wgpu
 
+from brainscan import tuning
 from brainscan.layout import TextOverlay
 
 if TYPE_CHECKING:
@@ -54,6 +55,7 @@ struct Uniforms {
     audience_edge_pulse: f32,
     global_brightness: f32,
     overlay_run_count: u32,
+    stretch_k: f32,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -103,6 +105,15 @@ fn thermal(v: f32) -> vec3<f32> {
     let g = clamp(t * 3.0 - 2.0, 0.0, 1.0);
     let b = clamp(min(t * 3.0, 2.0 - t * 3.0), 0.0, 1.0);
     return vec3<f32>(r, g, b);
+}
+
+fn asinh_stretch(v: f32, k: f32) -> f32 {
+    // Signed log-like contrast stretch: expands small magnitudes and
+    // compresses the outlier tail. Identity at v = -1, 0, +1. k <= 0 disables.
+    if k < 1e-6 {
+        return v;
+    }
+    return asinh(v * k) / asinh(k);
 }
 
 fn font_pixel(char_idx: u32, gx: u32, gy: u32) -> bool {
@@ -245,7 +256,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         final_rgb = vec3<f32>(0.05, 0.05, 0.05);
     } else {
         let raw = weights[idx];
-        let w = select(raw / uniforms.vmax, 0.0, uniforms.vmax < 1e-10);
+        let w_lin = select(raw / uniforms.vmax, 0.0, uniforms.vmax < 1e-10);
+        let w = asinh_stretch(w_lin, uniforms.stretch_k);
         if uniforms.colormap == 1u {
             final_rgb = thermal(w);
         } else {
@@ -282,6 +294,7 @@ _UNIFORM_DTYPE = np.dtype([
     ("audience_edge_pulse", np.float32),
     ("global_brightness", np.float32),
     ("overlay_run_count", np.uint32),
+    ("stretch_k", np.float32),
 ])
 
 
@@ -374,6 +387,7 @@ def create_render_pipeline(
     uniform_data["audience_edge_pulse"] = np.float32(0.0)
     uniform_data["global_brightness"] = np.float32(1.0)
     uniform_data["overlay_run_count"] = np.uint32(0)
+    uniform_data["stretch_k"] = np.float32(tuning.WEIGHT_STRETCH_K)
 
     uniform_size = max(((_UNIFORM_DTYPE.itemsize + 15) // 16) * 16, 64)
     uniform_buffer = device.create_buffer(
@@ -547,6 +561,7 @@ def draw(
     audience: LaneFrame | None = None,
     model: LaneFrame | None = None,
     global_brightness: float = 1.0,
+    stretch_k: float = tuning.WEIGHT_STRETCH_K,
 ) -> None:
     device = res.device
     param_count = len(flat_weights)
@@ -608,6 +623,7 @@ def draw(
     res.uniform_data["audience_pulse"] = audience_pulse_val
     res.uniform_data["audience_edge_pulse"] = audience_edge_pulse_val
     res.uniform_data["global_brightness"] = np.float32(global_brightness)
+    res.uniform_data["stretch_k"] = np.float32(stretch_k)
     device.queue.write_buffer(
         res.uniform_buffer, 0, res.uniform_data.tobytes()
     )
@@ -671,10 +687,14 @@ class OffscreenRenderer:
         audience: LaneFrame | None = None,
         model: LaneFrame | None = None,
         global_brightness: float = 1.0,
+        stretch_k: float = tuning.WEIGHT_STRETCH_K,
     ) -> np.ndarray:
         """Render weight data and return RGBA image as numpy array."""
         target_view = self._target_texture.create_view()
-        draw(self._res, target_view, flat_weights, audience, model, global_brightness)
+        draw(
+            self._res, target_view, flat_weights, audience, model,
+            global_brightness, stretch_k,
+        )
 
         data = self.device.queue.read_texture(
             {"texture": self._target_texture, "mip_level": 0, "origin": (0, 0, 0)},
@@ -756,6 +776,7 @@ class LiveRenderer:
         self._audience: LaneFrame | None = None
         self._model: LaneFrame | None = None
         self._global_brightness: float = 1.0
+        self._stretch_k: float = tuning.WEIGHT_STRETCH_K
 
         if fullscreen:
             self._go_fullscreen()
@@ -768,6 +789,7 @@ class LiveRenderer:
         audience: LaneFrame | None = None,
         model: LaneFrame | None = None,
         global_brightness: float = 1.0,
+        stretch_k: float = tuning.WEIGHT_STRETCH_K,
     ) -> None:
         """Thread-safe update of weight and lane data for the next frame."""
         with self._lock:
@@ -775,6 +797,7 @@ class LiveRenderer:
             self._audience = audience
             self._model = model
             self._global_brightness = global_brightness
+            self._stretch_k = stretch_k
 
     def _draw(self) -> None:
         with self._lock:
@@ -782,6 +805,7 @@ class LiveRenderer:
             audience = self._audience
             model = self._model
             global_brightness = self._global_brightness
+            stretch_k = self._stretch_k
 
         if weights is None:
             return
@@ -789,7 +813,10 @@ class LiveRenderer:
         # WgpuContext.get_current_texture is typed as `object` upstream;
         # the runtime value is always a wgpu.GPUTexture.
         texture = cast("wgpu.GPUTexture", self._context.get_current_texture())
-        draw(self._res, texture.create_view(), weights, audience, model, global_brightness)
+        draw(
+            self._res, texture.create_view(), weights, audience, model,
+            global_brightness, stretch_k,
+        )
 
     def _go_fullscreen(self) -> None:
         # Strip decorations and size to the monitor; on GNOME / Mutter that

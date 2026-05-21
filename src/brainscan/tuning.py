@@ -67,6 +67,15 @@ DRONE_GAIN_DB = -18.0
 PULSE_HALF_LIFE_SECONDS = 0.5
 """Decay constant for commit and partial pulses (visual shimmer)."""
 
+# --- Weight colourmap -----------------------------------------------
+
+WEIGHT_STRETCH_K = 8.0
+"""asinh contrast-stretch strength applied to per-rect-normalised weights
+before colourmapping. 0 disables it (linear mapping); larger values compress
+the outlier tail harder and lift the bulk of each matrix's distribution into
+visible colour. Heavy-tailed matrices (notably attention qkv) otherwise read
+as washed-out grey because a few outlier weights set the normalisation max."""
+
 # --- Rebirth --------------------------------------------------------
 
 REBIRTH_FADE_DURATION_SECONDS = 2.0
