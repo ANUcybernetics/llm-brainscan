@@ -4,6 +4,7 @@ title: Run the exhibition display at native 8K
 status: To Do
 assignee: []
 created_date: '2026-05-21 23:49'
+updated_date: '2026-05-22 00:28'
 labels:
   - deployment
   - jetson
@@ -32,4 +33,5 @@ Non-urgent: 4K@60 is a fine interim state. At native 8K, brainscan training thro
 - [ ] #1 The Jetson drives the Samsung panel at 7680x4320 and the TV displays a valid picture (no signal-loss or blank screen)
 - [ ] #2 brainscan renders fullscreen at native 7680x4320
 - [ ] #3 Native 8K survives a clean reboot with no manual intervention, returning to 7680x4320 automatically
+- [ ] #4 README deployment section documents the Samsung QN900D TV setup: the Cable Matters cable, HDMI port, Input Signal Plus, and how to set and persist native 8K
 <!-- AC:END -->
