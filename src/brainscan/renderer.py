@@ -5,8 +5,8 @@ storage buffer, and runs a fragment shader that applies a colourmap to produce
 the final image. All colourmap computation happens on the GPU.
 
 The bottom strip of the canvas carries two text lanes (audience speech and
-model output) rendered from a bitmap font, with each model-lane character
-coloured by its softmax probability.
+model output) rendered from an antialiased coverage atlas, with each
+model-lane character coloured by its softmax probability.
 
 Two renderer classes are provided:
 - OffscreenRenderer: render to a texture, read back as numpy array
@@ -23,6 +23,12 @@ import numpy as np
 import wgpu
 
 from brainscan import tuning
+from brainscan.font import (
+    LANE_GLYPH_H,
+    LANE_GLYPH_W,
+    generate_font_atlas,
+    generate_lane_font_atlas,
+)
 from brainscan.layout import TextOverlay
 
 if TYPE_CHECKING:
@@ -32,7 +38,6 @@ if TYPE_CHECKING:
 SHADER_SOURCE = """
 const ATTR_PARTIAL: u32 = 1u;
 const ATTR_SOURCE_TAG: u32 = 2u;
-const LANE_SCALE: u32 = 4u;
 const LANE_CELL_W: u32 = 32u;
 const LANE_CELL_H: u32 = 64u;
 
@@ -67,6 +72,7 @@ struct Uniforms {
 @group(0) @binding(6) var<storage, read> model_probs: array<f32>;
 @group(0) @binding(7) var<storage, read> overlay_chars: array<u32>;
 @group(0) @binding(8) var<storage, read> overlay_runs: array<vec4<u32>>;
+@group(0) @binding(9) var<storage, read> lane_font: array<u32>;
 
 struct VertexOutput {
     @builtin(position) pos: vec4<f32>,
@@ -125,6 +131,14 @@ fn font_pixel(char_idx: u32, gx: u32, gy: u32) -> bool {
     return (byte_val & (0x80u >> gx)) != 0u;
 }
 
+fn lane_coverage(char_idx: u32, gx: u32, gy: u32) -> f32 {
+    // 8-bit antialiased coverage from the 32x64 lane atlas, sampled 1:1.
+    let texel = char_idx * (LANE_CELL_W * LANE_CELL_H) + gy * LANE_CELL_W + gx;
+    let word = lane_font[texel / 4u];
+    let byte_val = (word >> ((texel % 4u) * 8u)) & 0xFFu;
+    return f32(byte_val) / 255.0;
+}
+
 fn overlay_pixel(px: u32, py: u32) -> vec4<f32> {
     // Returns dim-grey overlay colour if this pixel lights up an overlay
     // glyph; otherwise returns vec4(-1, ...) so the caller falls through to
@@ -170,22 +184,19 @@ fn audience_band(px: u32, py: u32) -> vec4<f32> {
             final_rgb = bg.rgb;
         } else {
             let glyph = audience_chars[col];
-            let gx = (scroll_x % LANE_CELL_W) / LANE_SCALE;
-            let gy = (lane_py - glyph_top) / LANE_SCALE;
-            if font_pixel(glyph, gx, gy) {
-                let attrs = audience_attrs[col];
-                var c: vec3<f32>;
-                if (attrs & ATTR_PARTIAL) != 0u {
-                    c = vec3<f32>(0.50, 0.46, 0.38);
-                } else if (attrs & ATTR_SOURCE_TAG) != 0u {
-                    c = vec3<f32>(0.62, 0.56, 0.42) * (1.0 + uniforms.audience_pulse * 0.6);
-                } else {
-                    c = vec3<f32>(0.94, 0.88, 0.72);
-                }
-                final_rgb = c;
+            let gx = scroll_x % LANE_CELL_W;
+            let gy = lane_py - glyph_top;
+            let cov = lane_coverage(glyph, gx, gy);
+            let attrs = audience_attrs[col];
+            var c: vec3<f32>;
+            if (attrs & ATTR_PARTIAL) != 0u {
+                c = vec3<f32>(0.50, 0.46, 0.38);
+            } else if (attrs & ATTR_SOURCE_TAG) != 0u {
+                c = vec3<f32>(0.62, 0.56, 0.42) * (1.0 + uniforms.audience_pulse * 0.6);
             } else {
-                final_rgb = bg.rgb;
+                c = vec3<f32>(0.94, 0.88, 0.72);
             }
+            final_rgb = mix(bg.rgb, c, cov);
         }
     }
     if uniforms.audience_edge_pulse > 0.0 && px >= uniforms.width - 24u {
@@ -220,14 +231,13 @@ fn model_band(px: u32, py: u32) -> vec4<f32> {
         return bg;
     }
     let glyph = model_chars[col];
-    let gx = (scroll_x % LANE_CELL_W) / LANE_SCALE;
-    let gy = (lane_py - glyph_top) / LANE_SCALE;
-    if font_pixel(glyph, gx, gy) {
-        let prob = model_probs[col];
-        let brightness = 0.25 + prob * 0.75;
-        return vec4<f32>(brightness, brightness * 0.95, brightness * 1.10, 1.0);
-    }
-    return bg;
+    let gx = scroll_x % LANE_CELL_W;
+    let gy = lane_py - glyph_top;
+    let cov = lane_coverage(glyph, gx, gy);
+    let prob = model_probs[col];
+    let brightness = 0.25 + prob * 0.75;
+    let c = vec3<f32>(brightness, brightness * 0.95, brightness * 1.10);
+    return vec4<f32>(mix(bg.rgb, c, cov), 1.0);
 }
 
 @fragment
@@ -271,9 +281,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 COLORMAP_DIVERGING = 0
 COLORMAP_THERMAL = 1
 
+# LANE_GLYPH_W / LANE_GLYPH_H (the 32x64 lane cell) come from font.py, which
+# owns the atlas geometry; LANE_SCALE is their ratio to the 8x16 chrome glyph.
 LANE_SCALE = 4
-LANE_GLYPH_W = 8 * LANE_SCALE   # 32 px
-LANE_GLYPH_H = 16 * LANE_SCALE  # 64 px
 
 _UNIFORM_DTYPE = np.dtype([
     ("width", np.uint32),
@@ -339,6 +349,7 @@ class RenderResources:
     uniform_buffer: wgpu.GPUBuffer
     weight_buffer: wgpu.GPUBuffer
     font_buffer: wgpu.GPUBuffer
+    lane_font_buffer: wgpu.GPUBuffer
     audience_chars_buffer: wgpu.GPUBuffer
     audience_attrs_buffer: wgpu.GPUBuffer
     model_chars_buffer: wgpu.GPUBuffer
@@ -407,9 +418,15 @@ def create_render_pipeline(
         usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST,
     )
 
-    from brainscan.font import generate_font_atlas
     font_data = generate_font_atlas()
     device.queue.write_buffer(font_buffer, 0, font_data.tobytes())
+
+    lane_font_data = generate_lane_font_atlas()
+    lane_font_buffer = device.create_buffer(
+        size=lane_font_data.nbytes,
+        usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST,
+    )
+    device.queue.write_buffer(lane_font_buffer, 0, lane_font_data.tobytes())
 
     cap = max(config.lane_capacity, 1)
     audience_chars_buffer = device.create_buffer(
@@ -451,7 +468,7 @@ def create_render_pipeline(
                     else wgpu.BufferBindingType.read_only_storage
                 },
             }
-            for i in range(9)
+            for i in range(10)
         ]
     )
 
@@ -465,6 +482,7 @@ def create_render_pipeline(
         model_probs_buffer,
         overlay_chars_buffer,
         overlay_runs_buffer,
+        lane_font_buffer,
     ]
     bind_group = device.create_bind_group(
         layout=bind_group_layout,
@@ -503,6 +521,7 @@ def create_render_pipeline(
         uniform_buffer=uniform_buffer,
         weight_buffer=weight_buffer,
         font_buffer=font_buffer,
+        lane_font_buffer=lane_font_buffer,
         audience_chars_buffer=audience_chars_buffer,
         audience_attrs_buffer=audience_attrs_buffer,
         model_chars_buffer=model_chars_buffer,

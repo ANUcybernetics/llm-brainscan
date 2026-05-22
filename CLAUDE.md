@@ -36,7 +36,7 @@ src/brainscan/
 ├── audio_drone.py  # Optional sub-bass DroneOscillator tracking loss
 ├── snapshot.py     # capture_weights() --- detached clone of all model params
 ├── layout.py       # maps param tensors to 8K canvas (left-to-right sections)
-├── font.py         # bitmap font atlas (8x16 glyphs) for GPU text rendering
+├── font.py         # chrome-label bitmap atlas + IBM Plex Mono lane atlas
 ├── renderer.py     # RenderConfig, RenderResources, LaneFrame,
 │                   #   create_render_pipeline(), draw()
 └── train.py        # training loop driven by Conversation.step()
@@ -46,7 +46,7 @@ tests/
 ├── test_data.py           # decode, prepare_batches
 ├── test_snapshot.py       # capture_weights
 ├── test_layout.py         # sections, compute_layout, overlaps, ordering
-├── test_font.py           # font atlas shape and glyph coverage
+├── test_font.py           # bitmap + antialiased lane atlas: shape, coverage
 ├── test_renderer.py       # two-lane rendering, lane scroll, display scaling
 ├── test_text_buffer.py    # TextBuffer append, persistence, rotate
 ├── test_stt.py            # speech detection, transcription, partial/end callbacks
@@ -106,8 +106,8 @@ gives the flattening order for the renderer's storage buffer.
    in layout order, zero-pads to canvas size.
 3. Snapshot the audience and model `LaneBuffer`s into `LaneFrame`s
    (`train.py:_build_lane_frames`).
-4. Upload raw weights, font atlas, and the two lane buffers to wgpu storage
-   buffers.
+4. Upload raw weights, both font atlases, and the two lane buffers to wgpu
+   storage buffers.
 5. Fragment shader normalises weights by `vmax`, applies colourmap per pixel
    (weight region) and renders two text lanes with their own colour rules
    (audience: warm cream, dimmed for `ATTR_PARTIAL`, slightly dimmer for
