@@ -193,26 +193,24 @@ class TestBuildDeltaBuffer:
         assert delta.shape == buf.shape
         assert (delta == 0.0).all()
 
-    def test_changed_values_normalised_to_unit_range(self):
+    def test_uniform_motion_is_no_signal(self):
+        # Differential semantics: when every parameter moved by the same
+        # amount there is no exceptional motion, so nothing lights up.
         from brainscan.train import _build_delta_buffer
 
         prev = np.zeros(100, dtype=np.float32)
-        buf = np.zeros(100, dtype=np.float32)
-        buf[:10] = 0.5
+        buf = np.full(100, 0.5, dtype=np.float32)
         delta = _build_delta_buffer(buf, prev)
-        assert delta.dtype == np.float32
-        assert delta.max() <= 1.0
-        assert delta[:10].min() > 0.0, "changed pixels should be nonzero"
-        assert (delta[10:] == 0.0).all(), "unchanged pixels stay zero"
+        assert (delta == 0.0).all()
 
-    def test_sqrt_curve_lifts_small_deltas(self):
+    def test_only_above_median_motion_lights_up(self):
         from brainscan.train import _build_delta_buffer
 
         prev = np.zeros(1000, dtype=np.float32)
-        buf = np.zeros(1000, dtype=np.float32)
-        buf[:990] = 1.0   # bulk sets the percentile scale at ~1.0
-        buf[990:] = 0.25  # small-but-real motion
+        buf = np.full(1000, 0.1, dtype=np.float32)  # gradient-noise floor
+        buf[:20] = 1.0  # exceptional motion
         delta = _build_delta_buffer(buf, prev)
-        # sqrt curve: a delta at 1/4 of the scale renders at ~1/2 intensity
-        small = delta[990:]
-        assert 0.45 < small.min() and small.max() < 0.55, f"got {small.min()}..{small.max()}"
+        assert delta.dtype == np.float32
+        assert delta.max() <= 1.0
+        assert (delta[20:] == 0.0).all(), "median-level motion stays dark"
+        assert delta[:20].min() > 0.9, "exceptional motion flashes bright"

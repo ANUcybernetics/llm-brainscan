@@ -92,8 +92,15 @@ y = 4320 ───────────────────────�
 ```
 
 Each lane is a single row of 240 chars at 4× scale (32×64 px glyphs); the right
-edge is "now" and older chars drift left. Sub-pixel scrolling is driven by per-
-lane `*_offset_px` uniforms.
+edge is "now" and older chars drift left. Scrolling is driven by per-lane
+`*_offset_px` uniforms.
+
+The audience lane is a wall-clock conveyor (`LaneBuffer.advance()` +
+`pad_to_now()`, driven from `Conversation.step()`): old transcript drifts
+left at `tuning.AUDIENCE_DRIFT_PX_PER_S` even during silence, chars that
+roll off the left edge are dropped, and each new utterance lands at the
+right edge with a blank gap proportional to the silence before it --- the
+lane reads as a timeline. The model lane is push-driven (no drift).
 
 The weight layout is defined by `Section` objects in `layout.py`. The
 `compute_layout` function assigns pixel coordinates; `layout_to_flat_order`
@@ -117,8 +124,9 @@ gives the flattening order for the renderer's storage buffer.
    pixel. The diverging map is black-centred: sign carries hue (negative
    blue, positive orange), magnitude carries luminance, extremes whiten.
    Nonzero weights get a dark floor tint so exact-zero chrome stays black
-   and matrices read as panels. A green-white shimmer proportional to `|Δw|`
-   flashes on each weight upload and decays
+   and matrices read as panels. A green-white shimmer flashes on each weight
+   upload where `|Δw|` is exceptional (median → p99.5 band, so the uniform
+   gradient-noise floor stays dark) and decays
    (`tuning.SHIMMER_HALF_LIFE_SECONDS`). The two text lanes have their own
    colour rules (audience: warm cream, dimmed for `ATTR_PARTIAL`, slightly
    dimmer for `ATTR_SOURCE_TAG`; model: cool blue-cream brightness

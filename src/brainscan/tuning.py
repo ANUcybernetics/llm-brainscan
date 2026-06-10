@@ -72,6 +72,13 @@ DRONE_GAIN_DB = -18.0
 PULSE_HALF_LIFE_SECONDS = 0.5
 """Decay constant for commit and partial pulses (visual shimmer)."""
 
+AUDIENCE_DRIFT_PX_PER_S = 24.0
+"""Conveyor speed of the audience lane in canvas px/second. Old transcript
+drifts left at this rate even during silence (one 32 px char cell per ~1.3 s;
+a full 7680 px lane rolls off in ~5.3 min), and each new utterance lands at
+the right edge with a gap proportional to the silence before it. 0 disables
+the drift, restoring the push-driven lane."""
+
 # --- Weight colourmap -----------------------------------------------
 
 WEIGHT_STRETCH_K = 4.0
@@ -92,7 +99,9 @@ setting the scale for the whole matrix; values beyond it clamp to the hot
 
 SHIMMER_STRENGTH = 0.6
 """Peak additive brightness of the learning shimmer (the green-white flash
-showing |delta-w| between weight snapshots). 0 disables the effect."""
+showing exceptional |delta-w| between weight snapshots --- above-median
+motion only, so the typical gradient-noise floor stays dark). 0 disables
+the effect."""
 
 SHIMMER_HALF_LIFE_SECONDS = 1.5
 """Half-life of the shimmer decay between weight uploads. Should be shorter

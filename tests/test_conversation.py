@@ -73,7 +73,10 @@ class TestListeningTransition:
         )
         snapshot = c.audience.snapshot()
         text = bytes(snapshot[0].tolist()[: c.audience.count]).decode("ascii")
-        assert text == "hello"
+        # The lane pads with blank timeline on utterance start so the
+        # transcript lands at the right edge ("now").
+        assert text.endswith("hello")
+        assert text.strip() == "hello"
 
 
 class TestRespondingTransition:
@@ -105,12 +108,18 @@ class TestRespondingTransition:
             listener=make_listener(committed=["hi"]),
             token_fn=_resp_token,
         )
-        _chars, attrs, _probs = c.audience.snapshot()
+        chars, attrs, _probs = c.audience.snapshot()
+        text = bytes(chars.tolist()[: c.audience.count]).decode("ascii")
+        # the right-aligned text follows blank timeline padding
+        tag_start = text.index(c.source_tag)
         tag_len = len(c.source_tag)
         # the "> mic > " prefix carries the dim source-tag attr
-        assert all(attrs[i] & ATTR_SOURCE_TAG for i in range(tag_len))
-        # the committed body does not; it renders at full cream brightness
-        assert all(attrs[i] == 0 for i in range(tag_len, c.audience.count))
+        assert all(
+            attrs[i] & ATTR_SOURCE_TAG for i in range(tag_start, tag_start + tag_len)
+        )
+        # the committed body (and the blank padding) does not; the body
+        # renders at full cream brightness
+        assert all(attrs[i] == 0 for i in range(tag_start + tag_len, c.audience.count))
 
     def test_commit_with_no_partial_shows_committed_text(self):
         # A short utterance can commit before any partial is displayed; the
@@ -124,7 +133,8 @@ class TestRespondingTransition:
         )
         chars, _attrs, _probs = c.audience.snapshot()
         text = bytes(chars.tolist()[: c.audience.count]).decode("ascii")
-        assert text == "> mic > yes"
+        assert text.endswith("> mic > yes")
+        assert text.strip() == "> mic > yes"
 
     def test_response_completes_then_cooldown(self):
         c = Conversation(
@@ -207,3 +217,73 @@ class TestCatchUpEmission:
         assert c.state == ConversationState.MUSE
         # And we didn't emit a flood of muse tokens with the response token_fn
         assert events.token_count == 1
+
+
+class TestAudienceDrift:
+    def test_transcript_rolls_off_during_silence(self):
+        c = Conversation(audience_drift_px_per_s=32.0)  # one cell per second
+        c.step(now=0.0, listener=make_listener(), token_fn=_muse_token)
+        c.step(
+            now=0.5,
+            listener=make_listener(committed=["hello there"]),
+            token_fn=_resp_token,
+        )
+        count_after_commit = c.audience.count
+        # 20 s of silence at one cell/s drifts 20 chars off the left edge
+        c.step(now=20.5, listener=make_listener(), token_fn=_resp_token)
+        assert c.audience.count == count_after_commit - 20
+
+    def test_lane_empties_completely_after_long_silence(self):
+        c = Conversation(audience_drift_px_per_s=32.0)
+        c.step(now=0.0, listener=make_listener(), token_fn=_muse_token)
+        c.step(
+            now=0.5,
+            listener=make_listener(committed=["hi"]),
+            token_fn=_resp_token,
+        )
+        c.step(now=500.0, listener=make_listener(), token_fn=_resp_token)
+        assert c.audience.count == 0
+        assert c.audience.offset_px == 0.0
+
+    def test_drift_disabled_with_zero_rate(self):
+        c = Conversation(audience_drift_px_per_s=0.0)
+        c.step(now=0.0, listener=make_listener(), token_fn=_muse_token)
+        c.step(
+            now=0.5,
+            listener=make_listener(committed=["hi"]),
+            token_fn=_resp_token,
+        )
+        count = c.audience.count
+        c.step(now=500.0, listener=make_listener(), token_fn=_resp_token)
+        assert c.audience.count == count
+
+    def test_new_utterance_lands_at_right_edge_after_drift(self):
+        c = Conversation(
+            audience_drift_px_per_s=32.0,
+            response_token_count=2,
+            response_token_interval=0.05,
+            cooldown_seconds=1.0,
+        )
+        c.step(now=0.0, listener=make_listener(), token_fn=_muse_token)
+        c.step(
+            now=0.5,
+            listener=make_listener(committed=["first"]),
+            token_fn=_resp_token,
+        )
+        # let the short response finish so MUSE (and the cooldown) can pass
+        c.step(now=0.55, listener=make_listener(), token_fn=_resp_token)
+        c.step(now=0.60, listener=make_listener(), token_fn=_resp_token)
+        assert c.state == ConversationState.MUSE
+        # silence long enough for some roll-off but not total
+        c.step(now=30.5, listener=make_listener(), token_fn=_muse_token)
+        # cooldown has passed; new speech begins
+        c.step(
+            now=31.0,
+            listener=make_listener(in_speech=True, partial="again"),
+            token_fn=_muse_token,
+        )
+        chars, _, _ = c.audience.snapshot()
+        text = bytes(chars.tolist()[: c.audience.count]).decode("ascii")
+        assert text.endswith("again"), f"partial should land at right edge, got {text!r}"
+        # the lane is padded out to the right-edge slot plus the partial
+        assert c.audience.count >= c.audience.capacity - 1

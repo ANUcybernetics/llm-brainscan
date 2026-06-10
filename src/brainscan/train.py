@@ -156,29 +156,33 @@ def _build_weight_buffer(
 
 
 def _build_delta_buffer(buf: np.ndarray, prev_buf: np.ndarray) -> np.ndarray:
-    """Normalised (0..1) |delta-w| between consecutive weight canvases.
+    """Differential (0..1) |delta-w| between consecutive weight canvases.
 
-    Normalises by the ``tuning.WEIGHT_VMAX_PERCENTILE`` percentile of the
-    nonzero deltas and applies a sqrt curve so small-but-real weight motion
-    is visible in the shimmer. Per-rect normalisation drift between
-    snapshots adds a faint whole-rect component, which is acceptable: it
-    only happens when the rect's own scale moved, i.e. when it learned.
+    During training the optimiser moves essentially every parameter by a
+    similar amount, so normalising raw |delta-w| produces a uniform global
+    flash rather than ripples. Instead, map the band from the median delta
+    (typical gradient noise -> 0) up to the ``tuning.WEIGHT_VMAX_PERCENTILE``
+    percentile (-> 1), so only parameters moving unusually hard light up.
     """
     # The canvas is ~32M floats and this runs on the train thread every
     # snapshot, so: one allocation, in-place ops, and a strided sample for
-    # the percentile estimate instead of a full sort.
+    # the percentile estimates instead of a full sort.
     delta = np.subtract(buf, prev_buf)
     np.abs(delta, out=delta)
     sample = delta[:: max(1, delta.size // 262144)]
     nonzero = sample[sample > 0]
     if nonzero.size == 0:
         return np.zeros_like(delta)
-    dmax = float(np.quantile(nonzero, tuning.WEIGHT_VMAX_PERCENTILE / 100.0))
-    if dmax <= 0.0:
+    floor, ceil = (
+        float(q) for q in
+        np.quantile(nonzero, [0.5, tuning.WEIGHT_VMAX_PERCENTILE / 100.0])
+    )
+    if ceil <= floor:
+        # Uniform motion everywhere is, differentially, no signal.
         return np.zeros_like(delta)
-    np.multiply(delta, 1.0 / dmax, out=delta)
+    np.subtract(delta, floor, out=delta)
+    np.multiply(delta, 1.0 / (ceil - floor), out=delta)
     np.clip(delta, 0.0, 1.0, out=delta)
-    np.sqrt(delta, out=delta)
     return delta
 
 
@@ -200,6 +204,7 @@ def _build_lane_frames(
         chars=a_chars,
         attrs_or_probs=a_attrs,
         count=convo.audience.count,
+        offset_px=int(convo.audience.offset_px),
         pulse=commit_pulse,
         edge_pulse=partial_pulse,
     )

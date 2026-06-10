@@ -150,3 +150,80 @@ class TestLaneBufferSourceTag:
         _chars, attrs, _ = buf.snapshot()
         for i in range(buf.count):
             assert attrs[i] & ATTR_SOURCE_TAG
+
+
+class TestConveyor:
+    def test_advance_accumulates_offset(self):
+        lane = LaneBuffer(capacity=10)
+        lane.push_text("abc")
+        lane.advance(0.5, 24.0)
+        assert lane.offset_px == 12.0
+
+    def test_advance_drops_rolled_off_chars_and_rebases(self):
+        lane = LaneBuffer(capacity=10)
+        lane.push_text("abcde")
+        lane.advance(3.0, 24.0)  # 72 px = 2 full cells + 8 px
+        assert lane.count == 3
+        assert lane.offset_px == 8.0
+        chars, _, _ = lane.snapshot()
+        assert bytes(chars.tolist()[: lane.count]).decode("ascii") == "cde"
+
+    def test_advance_adjusts_committed_watermark(self):
+        lane = LaneBuffer(capacity=10)
+        lane.push_text("abcd")
+        lane.replace_tail("xy")  # partial tail after 4 committed
+        lane.advance(3.0, 32.0)  # 96 px = 3 cells dropped
+        # committed watermark shrinks with the dropped chars, so a later
+        # replace_tail still only rewrites the partial tail
+        lane.replace_tail("z")
+        chars, _, _ = lane.snapshot()
+        assert bytes(chars.tolist()[: lane.count]).decode("ascii") == "dz"
+
+    def test_advance_empties_lane_and_resets_offset(self):
+        lane = LaneBuffer(capacity=10)
+        lane.push_text("ab")
+        lane.advance(10.0, 32.0)  # 320 px, far beyond the 2 chars
+        assert lane.count == 0
+        assert lane.offset_px == 0.0
+
+    def test_advance_noop_on_empty_lane(self):
+        lane = LaneBuffer(capacity=10)
+        lane.advance(10.0, 32.0)
+        assert lane.offset_px == 0.0
+
+    def test_advance_noop_with_zero_rate(self):
+        lane = LaneBuffer(capacity=10)
+        lane.push_text("abc")
+        lane.advance(10.0, 0.0)
+        assert lane.offset_px == 0.0
+        assert lane.count == 3
+
+    def test_pad_to_now_fills_committed_blanks(self):
+        lane = LaneBuffer(capacity=10)
+        lane.push_text("hi")
+        lane.pad_to_now()
+        assert lane.count == 9
+        chars, attrs, _ = lane.snapshot()
+        assert bytes(chars.tolist()[: lane.count]).decode("ascii") == "hi" + " " * 7
+        assert all(a == 0 for a in attrs.tolist()[: lane.count])
+        # padding is committed: replace_tail appends after it (the trim to
+        # capacity drops the oldest char off the left)
+        lane.replace_tail("yo", attrs=ATTR_PARTIAL)
+        chars, _, _ = lane.snapshot()
+        text = bytes(chars.tolist()[: lane.count]).decode("ascii")
+        assert text == "i       yo"
+
+    def test_pad_to_now_noop_when_full(self):
+        lane = LaneBuffer(capacity=10)
+        lane.push_text("0123456789")
+        lane.pad_to_now()
+        chars, _, _ = lane.snapshot()
+        assert bytes(chars.tolist()[: lane.count]).decode("ascii") == "0123456789"
+
+    def test_pad_to_now_noop_with_partial_tail(self):
+        lane = LaneBuffer(capacity=10)
+        lane.push_text("ab")
+        lane.replace_tail("cd", attrs=ATTR_PARTIAL)
+        lane.pad_to_now()
+        chars, _, _ = lane.snapshot()
+        assert bytes(chars.tolist()[: lane.count]).decode("ascii") == "abcd"

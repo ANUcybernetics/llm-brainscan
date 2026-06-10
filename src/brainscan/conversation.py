@@ -52,6 +52,7 @@ class Conversation:
     response_token_interval: float = tuning.RESPONDING_TOKEN_INTERVAL
     response_token_count: int = tuning.RESPONSE_TOKEN_COUNT
     cooldown_seconds: float = tuning.COOLDOWN_SECONDS
+    audience_drift_px_per_s: float = tuning.AUDIENCE_DRIFT_PX_PER_S
     tts_enabled: bool = False
     source_tag: str = "> mic > "
 
@@ -63,6 +64,7 @@ class Conversation:
     _response_remaining: int = 0
     _response_text: list[int] = field(default_factory=list)
     _cooldown_until: float = -1.0
+    _last_drift_t: float = -1.0
 
     def step(
         self,
@@ -75,6 +77,7 @@ class Conversation:
         for text in listener.committed:
             events.new_corpus_text.append(text)
 
+        self._advance_audience_drift(now)
         self._maybe_enter_listening(now, listener)
         self._maybe_handle_partial(listener)
         self._maybe_enter_responding(now, listener)
@@ -83,10 +86,22 @@ class Conversation:
         events.token_count = token_count
         return events
 
+    def _advance_audience_drift(self, now: float) -> None:
+        """Drift the audience lane left with wall-clock time, so old
+        transcript rolls off the screen even when nobody is speaking."""
+        if self._last_drift_t >= 0.0:
+            self.audience.advance(
+                now - self._last_drift_t, self.audience_drift_px_per_s
+            )
+        self._last_drift_t = now
+
     def _maybe_enter_listening(self, now: float, listener: ListenerSnapshot) -> None:
         if self.state == ConversationState.MUSE and listener.in_speech:
             if now >= self._cooldown_until:
                 self.state = ConversationState.LISTENING
+                # New utterance: fill the drift gap with blank timeline so
+                # the incoming transcript lands at the right edge ("now").
+                self.audience.pad_to_now()
 
     def _maybe_handle_partial(self, listener: ListenerSnapshot) -> None:
         if self.state != ConversationState.LISTENING:
@@ -99,6 +114,10 @@ class Conversation:
     def _maybe_enter_responding(self, now: float, listener: ListenerSnapshot) -> None:
         if not listener.committed:
             return
+        # A commit can arrive without a LISTENING phase (e.g. during
+        # cooldown); pad here too so it still lands at the right edge.
+        # pad_to_now is a no-op when a partial tail is already on screen.
+        self.audience.pad_to_now()
         # Set the tag body from the committed transcript itself, not from
         # whatever partial was on screen: a short utterance can commit
         # before any partial appears, which would leave a bare "> mic > ".
