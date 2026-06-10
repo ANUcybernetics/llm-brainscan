@@ -28,8 +28,13 @@ on the model's own TTS playback or echoey acoustics."""
 
 # --- Speech-to-text (Whisper) ---------------------------------------
 
-SILENCE_THRESHOLD = 0.01
-"""RMS amplitude threshold for is_speech. Raise for noisy environments."""
+SILENCE_THRESHOLD = 0.02
+"""RMS amplitude threshold for is_speech. Raise for noisy environments.
+
+0.02 (~-34 dBFS) sits above the measured busy-room noise floor at the Jetson
+install (crowd murmur ~0.006-0.008 RMS, peaking ~0.014); the old 0.01 let those
+peaks through and faster-whisper hallucinated filler ("Thank you.", "Hmm") on the
+non-speech. Recalibrate against a quiet room plus a 3 m spoken test before relying on it."""
 
 MIN_SPEECH_SECONDS = 0.5
 """Minimum speech duration before a Whisper transcribe is run on commit."""
