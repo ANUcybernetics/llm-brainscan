@@ -102,16 +102,27 @@ gives the flattening order for the renderer's storage buffer.
 ## Rendering pipeline
 
 1. Capture weights as a dict of tensors (`snapshot.py:capture_weights`).
-2. Build a flat weight buffer (`train.py:_build_weight_buffer`) --- flattens
-   in layout order, zero-pads to canvas size.
+2. Build a flat weight buffer (`train.py:_build_weight_buffer`) --- places
+   each tensor at its layout rect, normalising per rect by the
+   `tuning.WEIGHT_VMAX_PERCENTILE` percentile of `|w|` (outliers exceed ±1
+   and clamp to the hot end), zero-pads chrome to canvas size. The train
+   loop also builds a delta buffer (`train.py:_build_delta_buffer`):
+   normalised `|Δw|` vs the previous snapshot, driving the learning shimmer.
 3. Snapshot the audience and model `LaneBuffer`s into `LaneFrame`s
    (`train.py:_build_lane_frames`).
-4. Upload raw weights, both font atlases, and the two lane buffers to wgpu
-   storage buffers.
-5. Fragment shader normalises weights by `vmax`, applies colourmap per pixel
-   (weight region) and renders two text lanes with their own colour rules
-   (audience: warm cream, dimmed for `ATTR_PARTIAL`, slightly dimmer for
-   `ATTR_SOURCE_TAG`; model: cool blue-cream brightness `0.25 + prob * 0.75`).
+4. Upload normalised weights, deltas, both font atlases, and the two lane
+   buffers to wgpu storage buffers.
+5. Fragment shader normalises weights by `vmax` (1.0 in production since the
+   buffer is pre-normalised), asinh-stretches, and applies the colourmap per
+   pixel. The diverging map is black-centred: sign carries hue (negative
+   blue, positive orange), magnitude carries luminance, extremes whiten.
+   Nonzero weights get a dark floor tint so exact-zero chrome stays black
+   and matrices read as panels. A green-white shimmer proportional to `|Δw|`
+   flashes on each weight upload and decays
+   (`tuning.SHIMMER_HALF_LIFE_SECONDS`). The two text lanes have their own
+   colour rules (audience: warm cream, dimmed for `ATTR_PARTIAL`, slightly
+   dimmer for `ATTR_SOURCE_TAG`; model: cool blue-cream brightness
+   `0.25 + prob * 0.75`).
 6. Read back as RGBA numpy array (offscreen) or present to display (live).
 
 GPU resources are managed via dataclasses and pure functions:
@@ -121,7 +132,8 @@ GPU resources are managed via dataclasses and pure functions:
 - `LaneFrame`: per-lane payload (chars, attrs/probs, count, offset_px).
 - `RenderResources` (dataclass): GPU buffers, bind group, pipeline.
 - `create_render_pipeline(config, device, format)` → `RenderResources`.
-- `draw(resources, target_view, weights, audience=, model=)`.
+- `draw(resources, target_view, weights, audience=, model=, flat_deltas=,
+  shimmer=)`.
 
 Two renderer classes provide the high-level API:
 - `OffscreenRenderer`: headless via Vulkan, returns numpy array (no display).

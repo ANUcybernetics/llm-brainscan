@@ -152,6 +152,44 @@ class TestOffscreenRenderer:
         img_neg = renderer.render(negative)
         assert img_pos[16, 16, :3].sum() > img_neg[16, 16, :3].sum()
 
+    def test_explicit_vmax_clamps_outliers(self, small_renderer):
+        # Values beyond vmax should clamp to the hot end of the map, not
+        # rescale everything else: a 10.0 outlier and a 1.0 weight render
+        # identically when vmax=1.0.
+        data = np.full(32 * 32, 10.0, dtype=np.float32)
+        img_outlier = small_renderer.render(data, vmax=1.0)
+        data_unit = np.ones(32 * 32, dtype=np.float32)
+        img_unit = small_renderer.render(data_unit, vmax=1.0)
+        np.testing.assert_array_equal(img_outlier[16, 16], img_unit[16, 16])
+
+    def test_floor_tint_lifts_nonzero_weights(self, small_renderer):
+        # Tiny nonzero weights get the dark floor tint; exact zeros stay
+        # black so gutters/padding keep separating the matrix panels.
+        data = np.zeros(32 * 32, dtype=np.float32)
+        data[: 32 * 16] = 1e-5
+        img = small_renderer.render(data, vmax=1.0)
+        tinted = img[8, 16, :3]
+        padding = img[24, 16, :3]
+        assert tinted[2] > tinted[0] >= 5, f"expected blue-grey floor tint, got {tinted}"
+        assert all(c <= 2 for c in padding), f"exact zeros should stay black, got {padding}"
+
+    def test_shimmer_flashes_changed_pixels(self, small_renderer):
+        data = np.zeros(32 * 32, dtype=np.float32)
+        deltas = np.zeros(32 * 32, dtype=np.float32)
+        deltas[: 32 * 16] = 1.0
+        img = small_renderer.render(data, vmax=1.0, deltas=deltas, shimmer=1.0)
+        changed = img[8, 16, :3]
+        unchanged = img[24, 16, :3]
+        assert changed[1] > 150, f"changed pixels should flash green, got {changed}"
+        assert changed[1] > changed[0], f"flash should be green-dominant, got {changed}"
+        assert all(c <= 2 for c in unchanged), f"unchanged pixels stay dark, got {unchanged}"
+
+    def test_shimmer_zero_disables_flash(self, small_renderer):
+        data = np.zeros(32 * 32, dtype=np.float32)
+        deltas = np.ones(32 * 32, dtype=np.float32)
+        img = small_renderer.render(data, vmax=1.0, deltas=deltas, shimmer=0.0)
+        assert img[16, 16, :3].max() <= 2, "shimmer=0 must disable the flash"
+
     def test_different_sizes(self):
         for w, h in [(16, 16), (64, 32), (100, 50)]:
             renderer = OffscreenRenderer(w, h, audience_height=0, model_height=0)

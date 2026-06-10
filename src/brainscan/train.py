@@ -155,6 +155,25 @@ def _build_weight_buffer(
     return canvas.ravel()
 
 
+def _build_delta_buffer(buf: np.ndarray, prev_buf: np.ndarray) -> np.ndarray:
+    """Normalised (0..1) |delta-w| between consecutive weight canvases.
+
+    Normalises by the ``tuning.WEIGHT_VMAX_PERCENTILE`` percentile of the
+    nonzero deltas and applies a sqrt curve so small-but-real weight motion
+    is visible in the shimmer. Per-rect normalisation drift between
+    snapshots adds a faint whole-rect component, which is acceptable: it
+    only happens when the rect's own scale moved, i.e. when it learned.
+    """
+    delta = np.abs(buf - prev_buf)
+    nonzero = delta[delta > 0]
+    if nonzero.size == 0:
+        return np.zeros_like(delta)
+    dmax = float(np.quantile(nonzero, tuning.WEIGHT_VMAX_PERCENTILE / 100.0))
+    if dmax <= 0.0:
+        return np.zeros_like(delta)
+    return np.sqrt(np.clip(delta / dmax, 0.0, 1.0)).astype(np.float32)
+
+
 def _build_lane_frames(
     convo: Conversation,
     commit_pulse: float = 0.0,
@@ -467,6 +486,7 @@ def main() -> None:
         prev_state = ConversationState.MUSE
         rebirth_fade = RebirthFade()
         global_brightness = 1.0
+        prev_live_buf: np.ndarray | None = None
 
         def on_partial(text: str) -> None:
             partial_holder["text"] = text
@@ -659,6 +679,7 @@ def main() -> None:
                             audience=audience,
                             model=model_frame,
                             global_brightness=global_brightness,
+                            vmax=1.0,
                         )
                         if is_periodic and args.save_images:
                             save_frame(
@@ -674,11 +695,19 @@ def main() -> None:
                         buf = _build_weight_buffer(
                             current_weights, layout, WIDTH, HEIGHT,
                         )
+                        deltas = (
+                            _build_delta_buffer(buf, prev_live_buf)
+                            if prev_live_buf is not None and prev_live_buf.shape == buf.shape
+                            else None
+                        )
+                        prev_live_buf = buf
                         live_renderer.update(
                             buf,
                             audience=audience,
                             model=model_frame,
                             global_brightness=global_brightness,
+                            vmax=1.0,
+                            deltas=deltas,
                         )
                         live_weights_pushed = True
 

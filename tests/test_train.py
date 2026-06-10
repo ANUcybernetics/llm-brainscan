@@ -182,3 +182,37 @@ def test_train_main_smoke(tmp_path, monkeypatch):
     assert len(frames) >= 1
 
 
+
+
+class TestBuildDeltaBuffer:
+    def test_identical_buffers_give_zero_delta(self):
+        from brainscan.train import _build_delta_buffer
+
+        buf = np.random.default_rng(0).normal(size=64).astype(np.float32)
+        delta = _build_delta_buffer(buf, buf.copy())
+        assert delta.shape == buf.shape
+        assert (delta == 0.0).all()
+
+    def test_changed_values_normalised_to_unit_range(self):
+        from brainscan.train import _build_delta_buffer
+
+        prev = np.zeros(100, dtype=np.float32)
+        buf = np.zeros(100, dtype=np.float32)
+        buf[:10] = 0.5
+        delta = _build_delta_buffer(buf, prev)
+        assert delta.dtype == np.float32
+        assert delta.max() <= 1.0
+        assert delta[:10].min() > 0.0, "changed pixels should be nonzero"
+        assert (delta[10:] == 0.0).all(), "unchanged pixels stay zero"
+
+    def test_sqrt_curve_lifts_small_deltas(self):
+        from brainscan.train import _build_delta_buffer
+
+        prev = np.zeros(1000, dtype=np.float32)
+        buf = np.zeros(1000, dtype=np.float32)
+        buf[:990] = 1.0   # bulk sets the percentile scale at ~1.0
+        buf[990:] = 0.25  # small-but-real motion
+        delta = _build_delta_buffer(buf, prev)
+        # sqrt curve: a delta at 1/4 of the scale renders at ~1/2 intensity
+        small = delta[990:]
+        assert 0.45 < small.min() and small.max() < 0.55, f"got {small.min()}..{small.max()}"

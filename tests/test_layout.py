@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 
+from brainscan import tuning
 from brainscan.layout import (
     GUTTER,
     HEIGHT,
@@ -448,7 +449,7 @@ class TestPlaceWeightsOnCanvas:
         canvas = place_weights_on_canvas({}, layout, width=10, height=10, normalize_per_rect=False)
         assert (canvas == 0.0).all()
 
-    def test_normalize_per_rect_scales_each_rect_to_unit_range(self):
+    def test_normalize_per_rect_scales_each_rect_independently(self):
         params = {"a": 4, "b": 4}
         sections = [
             Section("S", groups=[Group("", [Item("a", None), Item("b", None)])])
@@ -470,10 +471,33 @@ class TestPlaceWeightsOnCanvas:
         b_rect = layout["b"]
         a_block = canvas[a_rect.y:a_rect.y + a_rect.h, a_rect.x:a_rect.x + a_rect.w].ravel()
         b_block = canvas[b_rect.y:b_rect.y + b_rect.h, b_rect.x:b_rect.x + b_rect.w].ravel()
-        # First a.count cells of a's rect = a's values / 0.5
-        np.testing.assert_allclose(a_block[:4], [0.2, -0.4, 1.0, -0.6])
-        # First b.count cells of b's rect = b's values / 4.0
-        np.testing.assert_allclose(b_block[:4], [0.25, -0.5, 1.0, -0.375])
+        # Each rect divides by its own WEIGHT_VMAX_PERCENTILE of |values|,
+        # so the rects scale independently of each other.
+        a_scale = np.quantile(np.abs(weights["a"]), tuning.WEIGHT_VMAX_PERCENTILE / 100.0)
+        b_scale = np.quantile(np.abs(weights["b"]), tuning.WEIGHT_VMAX_PERCENTILE / 100.0)
+        np.testing.assert_allclose(a_block[:4], weights["a"] / a_scale, rtol=1e-6)
+        np.testing.assert_allclose(b_block[:4], weights["b"] / b_scale, rtol=1e-6)
+
+    def test_normalize_per_rect_outliers_exceed_unit_range(self):
+        # A single huge outlier must not set the scale for the whole rect:
+        # the bulk should land well inside ±1 and the outlier beyond it.
+        params = {"a": 1000}
+        sections = [Section("S", groups=[Group("", [Item("a", None)])])]
+        layout = compute_layout(
+            params, sections=sections, width=50, height=30,
+            section_gutter=0, group_gutter=0, item_gutter=0,
+            label_gap_px=0, section_label_height=0,
+        )
+        values = np.full(1000, 0.5, dtype=np.float32)
+        values[0] = 100.0  # outlier
+        canvas = place_weights_on_canvas(
+            {"a": values}, layout, width=50, height=30, normalize_per_rect=True,
+        )
+        rect = layout["a"]
+        block = canvas[rect.y:rect.y + rect.h, rect.x:rect.x + rect.w].ravel()[:1000]
+        assert block[0] > 1.0, "outlier should exceed the unit range"
+        bulk = block[1:]
+        assert np.all(bulk > 0.5), f"bulk should not be crushed by the outlier, got {bulk.min()}"
 
     def test_normalize_per_rect_handles_all_zero_rect(self):
         params = {"a": 4}
@@ -497,8 +521,9 @@ class TestPlaceWeightsOnCanvas:
         canvas = place_weights_on_canvas(weights, layout, width=10, height=10)
         rect = layout["a"]
         block = canvas[rect.y:rect.y + rect.h, rect.x:rect.x + rect.w].ravel()
-        # Default normalise: values divided by 4.0 → [0.25, 0.5, 0.75, 1.0]
-        np.testing.assert_allclose(block[:4], [0.25, 0.5, 0.75, 1.0])
+        # Default normalise: values divided by the percentile scale
+        scale = np.quantile(np.abs(weights["a"]), tuning.WEIGHT_VMAX_PERCENTILE / 100.0)
+        np.testing.assert_allclose(block[:4], weights["a"] / scale, rtol=1e-6)
 
 
 class TestComputeTextOverlays:

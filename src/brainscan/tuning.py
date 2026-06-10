@@ -74,12 +74,37 @@ PULSE_HALF_LIFE_SECONDS = 0.5
 
 # --- Weight colourmap -----------------------------------------------
 
-WEIGHT_STRETCH_K = 8.0
+WEIGHT_STRETCH_K = 4.0
 """asinh contrast-stretch strength applied to per-rect-normalised weights
-before colourmapping. 0 disables it (linear mapping); larger values compress
-the outlier tail harder and lift the bulk of each matrix's distribution into
-visible colour. Heavy-tailed matrices (notably attention qkv) otherwise read
-as washed-out grey because a few outlier weights set the normalisation max."""
+before colourmapping. 0 disables it (linear mapping); larger values lift the
+bulk of each matrix's distribution towards the bright end. With the
+black-centred diverging map this is the overall brightness knob for the
+weight field. The percentile normalisation (WEIGHT_VMAX_PERCENTILE) already
+lifts the bulk relative to outliers, so this stays modest: at 4.0 a Gaussian
+init renders as a dark field with bright accents; much higher values wash
+the field out to uniform brightness."""
+
+WEIGHT_VMAX_PERCENTILE = 99.5
+"""Percentile of |weight| used as each rect's normalisation max. Using a
+percentile instead of the true max stops a handful of outlier weights from
+setting the scale for the whole matrix; values beyond it clamp to the hot
+(near-white) end of the colourmap."""
+
+SHIMMER_STRENGTH = 0.6
+"""Peak additive brightness of the learning shimmer (the green-white flash
+showing |delta-w| between weight snapshots). 0 disables the effect."""
+
+SHIMMER_HALF_LIFE_SECONDS = 1.5
+"""Half-life of the shimmer decay between weight uploads. Should be shorter
+than the interval between snapshots so each upload reads as a fresh pulse."""
+
+WEIGHT_FLOOR_TINT = (0.030, 0.032, 0.052)
+"""Very dark blue-grey floor for nonzero weights, so near-zero weights stay
+visible on panels that crush blacks while exact-zero padding (gutters, label
+bands) remains true black.
+
+Currently hard-coded in the WGSL fragment shader; kept here for traceability
+and so the tuning surface is complete."""
 
 # --- Rebirth --------------------------------------------------------
 

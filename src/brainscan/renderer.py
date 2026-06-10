@@ -16,6 +16,7 @@ Two renderer classes are provided:
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
@@ -61,6 +62,7 @@ struct Uniforms {
     global_brightness: f32,
     overlay_run_count: u32,
     stretch_k: f32,
+    shimmer: f32,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -73,6 +75,7 @@ struct Uniforms {
 @group(0) @binding(7) var<storage, read> overlay_chars: array<u32>;
 @group(0) @binding(8) var<storage, read> overlay_runs: array<vec4<u32>>;
 @group(0) @binding(9) var<storage, read> lane_font: array<u32>;
+@group(0) @binding(10) var<storage, read> deltas: array<f32>;
 
 struct VertexOutput {
     @builtin(position) pos: vec4<f32>,
@@ -286,6 +289,20 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         } else {
             final_rgb = diverging(w);
         }
+        // Floor tint (tuning.WEIGHT_FLOOR_TINT): lift genuine weights off
+        // true black so they survive crushed blacks on TV panels. Padding
+        // (gutters, label bands, rect tails) is exactly 0.0 and stays black,
+        // which keeps the matrix rects reading as separate panels.
+        if raw != 0.0 {
+            final_rgb = max(final_rgb, vec3<f32>(0.030, 0.032, 0.052));
+        }
+        // Learning shimmer: deltas holds pre-normalised |delta-w| in 0..1;
+        // shimmer carries strength x decay, so each weight upload flashes
+        // where training moved parameters and fades until the next one.
+        if uniforms.shimmer > 0.0 {
+            let flash = vec3<f32>(0.45, 1.0, 0.75) * (deltas[idx] * uniforms.shimmer);
+            final_rgb = clamp(final_rgb + flash, vec3<f32>(0.0), vec3<f32>(1.0));
+        }
     }
     return vec4<f32>(final_rgb * uniforms.global_brightness, 1.0);
 }
@@ -318,6 +335,7 @@ _UNIFORM_DTYPE = np.dtype([
     ("global_brightness", np.float32),
     ("overlay_run_count", np.uint32),
     ("stretch_k", np.float32),
+    ("shimmer", np.float32),
 ])
 
 
@@ -361,6 +379,7 @@ class RenderResources:
     uniform_data: np.ndarray
     uniform_buffer: wgpu.GPUBuffer
     weight_buffer: wgpu.GPUBuffer
+    delta_buffer: wgpu.GPUBuffer
     font_buffer: wgpu.GPUBuffer
     lane_font_buffer: wgpu.GPUBuffer
     audience_chars_buffer: wgpu.GPUBuffer
@@ -412,6 +431,7 @@ def create_render_pipeline(
     uniform_data["global_brightness"] = np.float32(1.0)
     uniform_data["overlay_run_count"] = np.uint32(0)
     uniform_data["stretch_k"] = np.float32(tuning.WEIGHT_STRETCH_K)
+    uniform_data["shimmer"] = np.float32(0.0)
 
     uniform_size = max(((_UNIFORM_DTYPE.itemsize + 15) // 16) * 16, 64)
     uniform_buffer = device.create_buffer(
@@ -421,6 +441,13 @@ def create_render_pipeline(
 
     max_params = config.width * config.height
     weight_buffer = device.create_buffer(
+        size=max_params * 4,
+        usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST,
+    )
+
+    # |delta-w| between consecutive weight uploads; wgpu zero-initialises,
+    # so shimmer is a no-op until the first delta upload.
+    delta_buffer = device.create_buffer(
         size=max_params * 4,
         usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST,
     )
@@ -481,7 +508,7 @@ def create_render_pipeline(
                     else wgpu.BufferBindingType.read_only_storage
                 },
             }
-            for i in range(10)
+            for i in range(11)
         ]
     )
 
@@ -496,6 +523,7 @@ def create_render_pipeline(
         overlay_chars_buffer,
         overlay_runs_buffer,
         lane_font_buffer,
+        delta_buffer,
     ]
     bind_group = device.create_bind_group(
         layout=bind_group_layout,
@@ -533,6 +561,7 @@ def create_render_pipeline(
         uniform_data=uniform_data,
         uniform_buffer=uniform_buffer,
         weight_buffer=weight_buffer,
+        delta_buffer=delta_buffer,
         font_buffer=font_buffer,
         lane_font_buffer=lane_font_buffer,
         audience_chars_buffer=audience_chars_buffer,
@@ -596,6 +625,8 @@ def draw(
     stretch_k: float = tuning.WEIGHT_STRETCH_K,
     vmax: float | None = None,
     upload_weights: bool = True,
+    flat_deltas: np.ndarray | None = None,
+    shimmer: float = 0.0,
 ) -> None:
     """Render one frame to ``target_view``.
 
@@ -604,6 +635,10 @@ def draw(
     buffer is not re-written and whatever was last uploaded is reused; the
     live renderer sets this when only the text lanes changed, so an
     unchanged weight buffer is not re-sent to the GPU on every present.
+
+    ``flat_deltas`` carries pre-normalised (0..1) |delta-w| per pixel and is
+    uploaded under the same ``upload_weights`` gate; ``shimmer`` scales the
+    additive flash it produces (0 disables, regardless of buffer contents).
     """
     device = res.device
     param_count = len(flat_weights)
@@ -667,6 +702,7 @@ def draw(
     res.uniform_data["audience_edge_pulse"] = audience_edge_pulse_val
     res.uniform_data["global_brightness"] = np.float32(global_brightness)
     res.uniform_data["stretch_k"] = np.float32(stretch_k)
+    res.uniform_data["shimmer"] = np.float32(shimmer)
     device.queue.write_buffer(
         res.uniform_buffer, 0, res.uniform_data.tobytes()
     )
@@ -675,6 +711,10 @@ def draw(
         device.queue.write_buffer(
             res.weight_buffer, 0, flat_weights.astype(np.float32).tobytes()
         )
+        if flat_deltas is not None:
+            device.queue.write_buffer(
+                res.delta_buffer, 0, flat_deltas.astype(np.float32).tobytes()
+            )
 
     command_encoder = device.create_command_encoder()
     render_pass = command_encoder.begin_render_pass(
@@ -732,12 +772,16 @@ class OffscreenRenderer:
         model: LaneFrame | None = None,
         global_brightness: float = 1.0,
         stretch_k: float = tuning.WEIGHT_STRETCH_K,
+        vmax: float | None = None,
+        deltas: np.ndarray | None = None,
+        shimmer: float = 0.0,
     ) -> np.ndarray:
         """Render weight data and return RGBA image as numpy array."""
         target_view = self._target_texture.create_view()
         draw(
             self._res, target_view, flat_weights, audience, model,
-            global_brightness, stretch_k,
+            global_brightness, stretch_k, vmax=vmax,
+            flat_deltas=deltas, shimmer=shimmer,
         )
 
         data = self.device.queue.read_texture(
@@ -819,6 +863,8 @@ class LiveRenderer:
         self._flat_weights: np.ndarray | None = None
         self._vmax: float = 0.0
         self._weights_dirty: bool = False
+        self._deltas: np.ndarray | None = None
+        self._weights_uploaded_at: float = 0.0
         self._audience: LaneFrame | None = None
         self._model: LaneFrame | None = None
         self._global_brightness: float = 1.0
@@ -836,19 +882,28 @@ class LiveRenderer:
         model: LaneFrame | None = None,
         global_brightness: float = 1.0,
         stretch_k: float = tuning.WEIGHT_STRETCH_K,
+        vmax: float | None = None,
+        deltas: np.ndarray | None = None,
     ) -> None:
         """Thread-safe update of weight and lane data for the next frame.
 
         Caches the normalisation max and marks the weight buffer dirty so the
         next ``_draw`` re-uploads it. Use ``update_lanes()`` when the weights
-        have not changed, to skip that upload.
+        have not changed, to skip that upload. ``deltas`` (pre-normalised
+        0..1 |delta-w|) triggers the learning shimmer, which flashes on the
+        upload and decays with ``tuning.SHIMMER_HALF_LIFE_SECONDS``.
         """
         weights = flat_weights.astype(np.float32, copy=True)
-        vmax = float(np.max(np.abs(weights))) if weights.size else 0.0
+        if vmax is None:
+            vmax = float(np.max(np.abs(weights))) if weights.size else 0.0
         with self._lock:
             self._flat_weights = weights
             self._vmax = vmax
             self._weights_dirty = True
+            self._deltas = (
+                deltas.astype(np.float32, copy=True) if deltas is not None else None
+            )
+            self._weights_uploaded_at = time.monotonic()
             self._audience = audience
             self._model = model
             self._global_brightness = global_brightness
@@ -877,6 +932,8 @@ class LiveRenderer:
             vmax = self._vmax
             upload_weights = self._weights_dirty
             self._weights_dirty = False
+            deltas = self._deltas
+            uploaded_at = self._weights_uploaded_at
             audience = self._audience
             model = self._model
             global_brightness = self._global_brightness
@@ -885,6 +942,13 @@ class LiveRenderer:
         if weights is None:
             return
 
+        shimmer = 0.0
+        if deltas is not None and tuning.SHIMMER_STRENGTH > 0.0:
+            elapsed = time.monotonic() - uploaded_at
+            shimmer = tuning.SHIMMER_STRENGTH * (
+                0.5 ** (elapsed / tuning.SHIMMER_HALF_LIFE_SECONDS)
+            )
+
         # WgpuContext.get_current_texture is typed as `object` upstream;
         # the runtime value is always a wgpu.GPUTexture.
         texture = cast("wgpu.GPUTexture", self._context.get_current_texture())
@@ -892,6 +956,7 @@ class LiveRenderer:
             self._res, texture.create_view(), weights, audience, model,
             global_brightness, stretch_k, vmax=vmax,
             upload_weights=upload_weights,
+            flat_deltas=deltas, shimmer=shimmer,
         )
 
     def _go_fullscreen(self) -> None:

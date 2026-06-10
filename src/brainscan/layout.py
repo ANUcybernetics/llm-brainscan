@@ -16,6 +16,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from brainscan import tuning
+
 WIDTH = 7680
 HEIGHT = 4320
 TEXT_STRIP_HEIGHT = 224
@@ -319,10 +321,13 @@ def place_weights_on_canvas(
     ``rect.h * rect.w`` >= ``rect.count``).
 
     When ``normalize_per_rect`` is True (default), each rect's values are
-    rescaled by dividing by their own ``max(|value|)`` so that every matrix
-    spans the full ±1 range. This makes per-matrix structure visible in
-    the colormapped output, at the cost of losing the global scale
-    comparison between matrices. When False, raw values are placed.
+    rescaled by dividing by their own ``tuning.WEIGHT_VMAX_PERCENTILE``
+    percentile of ``|value|``, so the bulk of every matrix spans the ±1
+    range while the outlier tail beyond the percentile exceeds it (the
+    shader clamps those to the hot end of the colourmap). This makes
+    per-matrix structure visible in the colormapped output, at the cost of
+    losing the global scale comparison between matrices. When False, raw
+    values are placed.
     """
     canvas = np.zeros((height, width), dtype=np.float32)
     for name, rect in layout.items():
@@ -330,7 +335,10 @@ def place_weights_on_canvas(
             continue
         flat = np.asarray(weights[name], dtype=np.float32).ravel()
         if normalize_per_rect:
-            scale = float(np.max(np.abs(flat))) if flat.size > 0 else 0.0
+            scale = (
+                float(np.quantile(np.abs(flat), tuning.WEIGHT_VMAX_PERCENTILE / 100.0))
+                if flat.size > 0 else 0.0
+            )
             if scale > 1e-10:
                 flat = flat / scale
         block = np.zeros(rect.h * rect.w, dtype=np.float32)
