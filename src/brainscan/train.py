@@ -164,14 +164,22 @@ def _build_delta_buffer(buf: np.ndarray, prev_buf: np.ndarray) -> np.ndarray:
     snapshots adds a faint whole-rect component, which is acceptable: it
     only happens when the rect's own scale moved, i.e. when it learned.
     """
-    delta = np.abs(buf - prev_buf)
-    nonzero = delta[delta > 0]
+    # The canvas is ~32M floats and this runs on the train thread every
+    # snapshot, so: one allocation, in-place ops, and a strided sample for
+    # the percentile estimate instead of a full sort.
+    delta = np.subtract(buf, prev_buf)
+    np.abs(delta, out=delta)
+    sample = delta[:: max(1, delta.size // 262144)]
+    nonzero = sample[sample > 0]
     if nonzero.size == 0:
         return np.zeros_like(delta)
     dmax = float(np.quantile(nonzero, tuning.WEIGHT_VMAX_PERCENTILE / 100.0))
     if dmax <= 0.0:
         return np.zeros_like(delta)
-    return np.sqrt(np.clip(delta / dmax, 0.0, 1.0)).astype(np.float32)
+    np.multiply(delta, 1.0 / dmax, out=delta)
+    np.clip(delta, 0.0, 1.0, out=delta)
+    np.sqrt(delta, out=delta)
+    return delta
 
 
 def _build_lane_frames(

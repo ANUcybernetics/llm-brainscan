@@ -900,8 +900,10 @@ class LiveRenderer:
             self._flat_weights = weights
             self._vmax = vmax
             self._weights_dirty = True
+            # No defensive copy: the train loop hands over a freshly built
+            # array each snapshot and never mutates it afterwards.
             self._deltas = (
-                deltas.astype(np.float32, copy=True) if deltas is not None else None
+                deltas.astype(np.float32, copy=False) if deltas is not None else None
             )
             self._weights_uploaded_at = time.monotonic()
             self._audience = audience

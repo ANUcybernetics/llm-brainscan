@@ -335,10 +335,17 @@ def place_weights_on_canvas(
             continue
         flat = np.asarray(weights[name], dtype=np.float32).ravel()
         if normalize_per_rect:
-            scale = (
-                float(np.quantile(np.abs(flat), tuning.WEIGHT_VMAX_PERCENTILE / 100.0))
-                if flat.size > 0 else 0.0
-            )
+            if flat.size > 0:
+                # Subsample large tensors for the percentile estimate: a
+                # ~64k stride sample pins p99.5 closely enough for display
+                # normalisation, at a fraction of the full-sort cost on the
+                # Jetson's ARM cores.
+                sample = flat[:: max(1, flat.size // 65536)]
+                scale = float(
+                    np.quantile(np.abs(sample), tuning.WEIGHT_VMAX_PERCENTILE / 100.0)
+                )
+            else:
+                scale = 0.0
             if scale > 1e-10:
                 flat = flat / scale
         block = np.zeros(rect.h * rect.w, dtype=np.float32)
