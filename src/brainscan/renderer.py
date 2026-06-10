@@ -98,11 +98,24 @@ fn vs_main(@builtin(vertex_index) idx: u32) -> VertexOutput {
 }
 
 fn diverging(v: f32) -> vec3<f32> {
+    // Black at zero: sign carries hue (negative blue, positive orange) and
+    // magnitude carries luminance, desaturating towards white at the extremes
+    // so outliers read as hot. Two linear segments per side: black -> mid on
+    // |t| in [0, 0.5], mid -> top on [0.5, 1].
     let t = clamp(v, -1.0, 1.0);
-    let r = clamp(0.5 + t * 0.5, 0.0, 1.0);
-    let g = clamp(0.5 - abs(t) * 0.4, 0.0, 1.0);
-    let b = clamp(0.5 - t * 0.5, 0.0, 1.0);
-    return vec3<f32>(r, g, b);
+    let a = abs(t);
+    let lo = min(a * 2.0, 1.0);
+    let hi = max(a * 2.0 - 1.0, 0.0);
+    var mid: vec3<f32>;
+    var top: vec3<f32>;
+    if t < 0.0 {
+        mid = vec3<f32>(0.05, 0.30, 0.72);
+        top = vec3<f32>(0.64, 0.90, 1.00);
+    } else {
+        mid = vec3<f32>(0.74, 0.26, 0.02);
+        top = vec3<f32>(1.00, 0.80, 0.38);
+    }
+    return mix(mid * lo, top, hi);
 }
 
 fn thermal(v: f32) -> vec3<f32> {

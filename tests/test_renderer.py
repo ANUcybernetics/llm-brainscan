@@ -100,11 +100,11 @@ class TestOffscreenRenderer:
         assert img.shape == (32, 32, 4)
         assert img.dtype == np.uint8
 
-    def test_render_all_zeros_is_midpoint(self, small_renderer):
+    def test_render_all_zeros_is_black(self, small_renderer):
         data = np.zeros(32 * 32, dtype=np.float32)
         img = small_renderer.render(data)
         centre = img[16, 16, :3]
-        assert all(120 <= c <= 136 for c in centre), f"Expected ~128, got {centre}"
+        assert all(c <= 8 for c in centre), f"Expected near-black centre, got {centre}"
 
     def test_render_positive_is_reddish(self, small_renderer):
         data = np.ones(32 * 32, dtype=np.float32)
@@ -131,7 +131,7 @@ class TestOffscreenRenderer:
         data = np.zeros(32 * 32, dtype=np.float32)
         img = small_renderer.render(data)
         centre = img[16, 16, :3]
-        assert all(120 <= c <= 136 for c in centre), f"Expected ~128, got {centre}"
+        assert all(c <= 8 for c in centre), f"Expected near-black centre, got {centre}"
 
     def test_partial_fill(self, small_renderer):
         data = np.ones(100, dtype=np.float32)
