@@ -20,5 +20,10 @@
     "science communication",
     "generative AI",
     "interactive art"
+  ],
+  "communities": [
+    {
+      "identifier": "cybernetic-studio"
+    }
   ]
 }
