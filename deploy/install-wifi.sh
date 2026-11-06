@@ -7,7 +7,7 @@
 #
 # Wired remains the preferred route when plugged (lower default metric);
 # this profile takes over the moment ethernet drops, and Tailscale roams
-# with it. See CLAUDE.md "Deployment on Jetson" for the full chain.
+# with it. See AGENTS.md "Deployment on Jetson" for the full chain.
 #
 # Usage:
 #   1. Edit SSID, IDENTITY, PASSWORD below for the target site.
