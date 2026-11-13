@@ -1,7 +1,7 @@
 {
   "title": "LLM Brainscan",
   "description": "A real-time data-art installation that maps every trainable parameter of a small transformer model onto an 8K display---one pixel per weight, around 32 million of them, updating live as the model trains. Attention heads forming, layer norms stabilising, and transient features appearing and dissolving become directly observable, structure that summary statistics flatten away. A microphone input makes it interactive: speech both steers the output and folds into the training data. Runs on a single compact machine small enough to stand in a gallery. A Cybernetic Studio (Australian National University) project.",
-  "upload_type": "software",
+  "upload_type": "other",
   "access_right": "open",
   "license": "cc-by-4.0",
   "creators": [
