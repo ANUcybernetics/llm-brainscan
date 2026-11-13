@@ -5,9 +5,9 @@
 Visualise a character-level GPT's weight matrices during training on an 8K
 display (one pixel per parameter). The model has ~30M params; the bottom 224px
 of the display is a two-lane text strip carrying a live conversation between the
-audience (via mic) and the model (via streaming generation). The piece resets at
-a configured wall-clock time each day so visitors at the same time of day see
-the same stage of learning.
+audience (via mic) and the model (via streaming generation). The piece resets
+(the weekly rebirth below) at a configured weekday and wall-clock time, so
+visitors in the same week see the same brain growing.
 
 ## Stack
 
@@ -18,46 +18,6 @@ the same stage of learning.
 - rendercanvas (GLFW backend) for live fullscreen window display
 - faster-whisper for speech-to-text
 - piper-tts (optional, `uv sync --extra tts`) for offline text-to-speech
-- All commands: `mise exec -- uv run ...`
-- Tests: `mise exec -- uv run pytest tests/ -v`
-- Type checking: `mise exec -- uv run ty check`
-
-## Code layout
-
-```
-src/brainscan/
-├── model.py        # GPT model + generate() + streaming_generate()
-├── data.py         # decode(), TextBuffer (with rotate()), prepare_batches
-├── stt.py          # SpeechConfig, is_speech(), transcribe(), SpeechListener
-│                   #   (with partial_callback + speech_end_callback)
-├── tts.py          # TTSEngine wrapper around piper (optional, no-op when off)
-├── lanes.py        # LaneBuffer circular char buffer (partial/committed)
-├── conversation.py # MUSE/LISTENING/RESPONDING state machine, Conversation.step()
-├── rebirth.py      # rotate_audience_log(), rebirth(), RebirthScheduler
-├── audio_drone.py  # Optional sub-bass DroneOscillator tracking loss
-├── snapshot.py     # capture_weights() --- detached clone of all model params
-├── layout.py       # maps param tensors to 8K canvas (left-to-right sections)
-├── font.py         # chrome-label bitmap atlas + IBM Plex Mono lane atlas
-├── renderer.py     # RenderConfig, RenderResources, LaneFrame,
-│                   #   create_render_pipeline(), draw()
-└── train.py        # training loop driven by Conversation.step()
-tests/
-├── conftest.py            # shared fixtures (SMALL_CONFIG, device, small_model)
-├── test_model.py          # architecture, forward pass, generate, streaming_generate
-├── test_data.py           # decode, prepare_batches
-├── test_snapshot.py       # capture_weights
-├── test_layout.py         # sections, compute_layout, overlaps, ordering
-├── test_font.py           # bitmap + antialiased lane atlas: shape, coverage
-├── test_renderer.py       # two-lane rendering, lane scroll, display scaling
-├── test_text_buffer.py    # TextBuffer append, persistence, rotate
-├── test_stt.py            # speech detection, transcription, partial/end callbacks
-├── test_tts.py            # TTSEngine enabled/disabled paths (mocked piper)
-├── test_lanes.py          # LaneBuffer push, replace_tail, commit_partial
-├── test_conversation.py   # state machine transitions, timing, cooldown
-├── test_rebirth.py        # rotate_audience_log, rebirth(), RebirthScheduler
-├── test_audio_drone.py    # DroneOscillator loss-to-pitch mapping
-└── test_train.py          # train loop wiring, smoke test, weekly-seed reproducibility
-```
 
 ## Key constraints
 
@@ -133,23 +93,6 @@ gives the flattening order for the renderer's storage buffer.
    brightness `0.25 + prob * 0.75`).
 6. Read back as RGBA numpy array (offscreen) or present to display (live).
 
-GPU resources are managed via dataclasses and pure functions:
-
-- `RenderConfig` (frozen dataclass): width, height, colormap, lane heights.
-  Defaults audience/model heights to 0 (lanes disabled); the train CLI passes
-  the production `112/112`.
-- `LaneFrame`: per-lane payload (chars, attrs/probs, count, offset_px).
-- `RenderResources` (dataclass): GPU buffers, bind group, pipeline.
-- `create_render_pipeline(config, device, format)` → `RenderResources`.
-- `draw(resources, target_view, weights, audience=, model=, flat_deltas=, shimmer=)`.
-
-Two renderer classes provide the high-level API:
-
-- `OffscreenRenderer`: headless via Vulkan, returns numpy array (no display).
-- `LiveRenderer`: fullscreen window via rendercanvas/GLFW, training runs in
-  background thread, `update()` (full frame) and `update_lanes()` (text strip
-  only, decoupled from weight capture) push data thread-safely, `--live` flag.
-
 ## Conversation state machine
 
 `conversation.py:Conversation` is a pure dataclass driven by the train loop.
@@ -223,15 +166,10 @@ cycle is logged to `output/rebirth.log`.
 
 ## Speech-to-text
 
-Audio processing uses dataclasses and pure functions:
-
-- `SpeechConfig` (frozen dataclass): model size, thresholds, sample rate.
-- `is_speech(audio, threshold)` --- pure function for speech detection.
-- `transcribe(model, audio)` --- pure function for Whisper transcription.
-- `SpeechListener` --- thin thread/queue wrapper. Optional callbacks:
-  `partial_callback(text)` fires while `in_speech` at most once per
-  `partial_interval_seconds`; `speech_end_callback()` fires once on the
-  silence-after-speech transition (so the conversation can clear partial state).
+`SpeechListener` takes optional callbacks: `partial_callback(text)` fires while
+`in_speech` at most once per `partial_interval_seconds`; `speech_end_callback()`
+fires once on the silence-after-speech transition (so the conversation can clear
+partial state).
 
 ## Text-to-speech (optional)
 
@@ -241,43 +179,6 @@ machines and CI work without the model file. `speak(text)` plays via sounddevice
 and returns the duration estimate; the train loop extends the conversation
 cooldown by that duration so the listener doesn't re-trigger on the model's own
 playback.
-
-## Key APIs
-
-- `GPT.generate(prompt_bytes, max_tokens, device=None)` --- autoregressive
-  sampling, returns `(tokens, probs)`.
-- `GPT.streaming_generate(prompt_bytes, device=None, emit_prompt=False)` ---
-  generator yielding `(token, prob)` pairs one at a time, used by the
-  conversation driver to pace generation against wall-clock time.
-- `train.py:_build_weight_buffer(weights, flat_order, canvas_pixels)` ---
-  flatten weights into a zero-padded float32 array.
-- `train.py:_build_lane_frames(convo)` --- snapshot the conversation's audience
-  and model lane buffers into renderer payloads.
-- `Conversation.step(now, listener_snapshot, token_fn)` --- advance the state
-  machine; returns `StepEvents` describing requested side effects.
-- `rebirth(model, audience_dir, persist_count, seed)` --- reset weights and load
-  historical audience; returns `RebirthResult(audience, seed)`. The seed corpus
-  is loaded once at training startup, not at rebirth.
-
-## CLI flags
-
-- `--live` — fullscreen window via rendercanvas/GLFW.
-- `--save-images` — write PNGs to `output/frames/`.
-- `--no-mic` — disable speech listener.
-- `--speak` — enable TTS for model responses (requires piper extra).
-- `--drone` — enable sub-bass drone tracking loss (atmospheric extra).
-- `--rebirth-at "DOW HH:MM"` — weekly rebirth time (e.g., `"MON 02:00"`, 24h
-  local). Default off.
-- `--persist-audience-cycles N` — N past audience-log cycles (~weeks) prepended
-  to corpus on rebirth (default 2, 0 disables).
-- `--seed N` — base seed for weekly rebirth (per-week seed =
-  sha256(iso-week+N)).
-
-Plus the existing model/training knobs (`--n-layer`, `--n-head`, `--n-embd`,
-`--sequence-len`, `--batch-size`, `--lr`, `--steps`, `--snapshot-every`,
-`--gen-tokens`, `--silence-threshold`, `--chunk-seconds`,
-`--min-speech-seconds`, `--max-speech-seconds`, `--whisper-model`,
-`--whisper-device`, `--data`, `--output-dir`).
 
 ## Tuning
 
@@ -317,24 +218,10 @@ systemctl --user daemon-reload
 systemctl --user enable --now brainscan.service
 ```
 
-Day-to-day operations:
-
-```sh
-systemctl --user status brainscan          # is it running?
-systemctl --user restart brainscan         # after a code pull
-journalctl --user-unit brainscan -f        # tail logs (auto-flushed; PYTHONUNBUFFERED=1)
-journalctl --user-unit brainscan --since "1 hour ago"
-```
-
-Note: use `--user-unit brainscan`, not `--user -u brainscan`. Per-user journald
-isn't enabled on the Jetson, so user-unit logs land in the system journal and
-need the system-journal flag form to filter.
+Tail logs with `journalctl --user-unit brainscan -f` (add `--since "1 hour ago"`
+to page back), not `--user -u brainscan`. Per-user journald isn't enabled on the
+Jetson, so user-unit logs land in the system journal and need the system-journal
+flag form to filter.
 
 The unit auto-restarts on failure (10 s backoff, max 5 restarts per 10 min) and
 re-launches whenever the X session restarts.
-
-## Conventions
-
-- use `mise exec -- uv run` prefix for all commands
-- pytest for testing; aim for comprehensive coverage
-- no type: ignore or # noqa unless genuinely necessary
